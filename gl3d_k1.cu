@@ -402,9 +402,6 @@ int main(int argc, char* argv[]) {
     cd* trial_ptr = thrust::raw_pointer_cast(trial.data());
     cd* g_trial_ptr = thrust::raw_pointer_cast(g_trial.data());
 
-
-    // CAMBIO 3D: el seed file debe tener Nx*Ny*Nz pares (r,im), en orden
-    // i mas rapido, luego j, luego k (mismo orden que hidx3).
     for(auto& p : psi){
       double r, im;
       if (!(seed_file >> r >> im)) break;
