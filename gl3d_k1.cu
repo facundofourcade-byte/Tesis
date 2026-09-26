@@ -36,7 +36,6 @@ using cd = thrust::complex<double>;
 
 int Nx, Ny, Nz, Nv;
 double dx, Lx, Ly, Bz, By, k1;
-int lifshitz_on;
 
 __constant__ int d_Nx, d_Ny, d_Nz;
 __constant__ double d_dx, d_Lx, d_Bz, d_By, d_k1;
@@ -129,71 +128,61 @@ cd dot(const cd* d_a, const cd* d_b, int Ntot)
 }
 
 
-// Gradiente: dF/dpsi* = -D^2 psi - (|psi|^2-1)psi + By*Dx_psi (si lifshitz_on),
-// con Dx_psi=-i*Dx_centered (covariante). El laplaciano covariante incluye
-// ahora el link de A_x en x (bulk) y la condicion de Neumann en z (vecino
-// fantasma = clon del borde, CAMBIO 3D punto 5).
-
 __global__ void compute_gradient(const cd* psi, cd* grad){
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    int idy = blockIdx.y * blockDim.y + threadIdx.y;
-    int idz = blockIdx.z * blockDim.z + threadIdx.z;
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    int k = blockIdx.z * blockDim.z + threadIdx.z;
 
-    if(idx >= d_Nx || idy >= d_Ny || idz >= d_Nz) return;
+    if(i >= d_Nx || j >= d_Ny || k >= d_Nz) return;
 
-    int id = idx + d_Nx * (idy + d_Ny * idz);
+    int id = i + d_Nx * (j + d_Ny * k);
     cd psi0 = psi[id];
-    double y = idy * d_dx;
-    double z = idz * d_dx;
+    double x = i * d_dx;
+    double y = j * d_dx;
+    double z = k * d_dx;
 
-    // --- X: link de Peierls por A_x=By*z en cada bond + twist de borde (Bz) ---
-    int ip = (idx + 1) % d_Nx;
-    int im = (idx - 1 + d_Nx) % d_Nx;
+    //Laplaciano covariante en x con twist de borde
+    int ip = (i + 1) % d_Nx;
+    int im = (i - 1 + d_Nx) % d_Nx;
 
     cd Ux_pos = thrust::exp(cd(0.0, -d_By * z * d_dx));
     cd Ux_neg = thrust::conj(Ux_pos);
 
-    cd psi_xp = psi[ip + d_Nx * (idy + d_Ny * idz)] * Ux_pos;
-    cd psi_xm = psi[im + d_Nx * (idy + d_Ny * idz)] * Ux_neg;
+    cd psi_xp = psi[ip + d_Nx * (j + d_Ny * k)] * Ux_pos;
+    cd psi_xm = psi[im + d_Nx * (j + d_Ny * k)] * Ux_neg;
 
-    if (idx == d_Nx - 1) psi_xp *= thrust::exp(cd(0.0,  d_Bz * d_Lx * y));
-    if (idx == 0)        psi_xm *= thrust::exp(cd(0.0, -d_Bz * d_Lx * y));
+    if (i == d_Nx - 1) psi_xp *= thrust::exp(cd(0.0,  d_Bz * d_Lx * y));
+    if (i == 0)        psi_xm *= thrust::exp(cd(0.0, -d_Bz * d_Lx * y));
 
-    // --- Y: igual que en 2D ---
-    int jp = (idy + 1) % d_Ny;
-    int jm = (idy - 1 + d_Ny) % d_Ny;
-    double phase_y = d_Bz * (idx * d_dx) * d_dx;
-    cd Uy_pos = thrust::exp(cd(0.0, -phase_y));
+    //Laplaciano covariante en y
+    int jp = (j + 1) % d_Ny;
+    int jm = (j - 1 + d_Ny) % d_Ny;
+    cd Uy_pos = thrust::exp(cd(0.0, - d_Bz * x * d_dx));
     cd Uy_neg = thrust::conj(Uy_pos);
 
-    cd psi_yp = Uy_pos * psi[idx + d_Nx * (jp + d_Ny * idz)];
-    cd psi_ym = Uy_neg * psi[idx + d_Nx * (jm + d_Ny * idz)];
+    cd psi_yp = Uy_pos * psi[i + d_Nx * (jp + d_Ny * k)];
+    cd psi_ym = Uy_neg * psi[i + d_Nx * (jm + d_Ny * k)];
 
-    // --- Z: Neumann, sin link. Vecino fantasma = clon del borde (CAMBIO 3D). ---
-    int kp = (idz < d_Nz - 1) ? idz + 1 : idz;
-    int km = (idz > 0)        ? idz - 1 : idz;
-    cd psi_zp = psi[idx + d_Nx * (idy + d_Ny * kp)];
-    cd psi_zm = psi[idx + d_Nx * (idy + d_Ny * km)];
+    //Laplaciano en z con condicion Neumann en z = 0, Lz. 
+    int kp = (k < d_Nz - 1) ? k + 1 : k;
+    int km = (k > 0)        ? k - 1 : k;
+    cd psi_zp = psi[i + d_Nx * (j + d_Ny * kp)];
+    cd psi_zm = psi[i + d_Nx * (j + d_Ny * km)];
 
-    cd lap = (psi_xp + psi_xm + psi_yp + psi_ym + psi_zp + psi_zm - 6.0 * psi0)
-             / (d_dx * d_dx);
+    cd lap = (psi_xp + psi_xm + psi_yp + psi_ym + psi_zp + psi_zm - 6.0 * psi0) / (d_dx * d_dx);
 
     cd grad_val = -lap - (1.0 - thrust::norm(psi0)) * psi0;
 
-    if (d_lifshitz_on) {
-        cd Dx_centered = (psi_xp - psi_xm) / (2.0 * d_dx);   // ya covariante
-        grad_val += cd(0.0, -d_By) * Dx_centered;
-    }
+    //Aporte termino lineal Lifshitz
+    cd Dx_centered = (psi_xp - psi_xm) / (2.0 * d_dx);
+    grad_val += cd(0.0, -d_By * d_k1) * Dx_centered;    
 
     grad[id] = grad_val;
 }
 
 
-// CAMBIO 3D: agrega columna z; separador de linea en blanco por fila (i) y
-// separador extra entre bloques de z.
-void write_field(const std::vector<cd>& psi,
-                 const std::string& fname,
-                 bool density)
+//Escribe la densidad o la fase en un .dat
+void write_field(const std::vector<cd>& psi, const std::string& fname, bool density)
 {
     std::ofstream file(fname);
     file<<std::setprecision(14);
@@ -205,9 +194,7 @@ void write_field(const std::vector<cd>& psi,
                 double x=i*dx;
                 double y=j*dx;
                 double z=k*dx;
-                double val = density ?
-                             thrust::norm(psi[id]) :
-                             thrust::arg(psi[id]);
+                double val = density ? thrust::norm(psi[id]) : thrust::arg(psi[id]);
                 file<<x<<" "<<y<<" "<<z<<" "<<val<<"\n";
             }
             file<<"\n";
@@ -271,13 +258,13 @@ double line_search_wolfe(
 
 
 struct polak_ribiere_op {
-    __host__ __device__
-    cd operator()(const cd& g, const cd& g_old) const {
+    __host__ __device__ cd operator()(const cd& g, const cd& g_old) const {
         return thrust::conj(g) * (g - g_old);
     }
 };
 
 
+//=================================================================================================================================================================
 struct energy_density_functor_twisted {
     const cd* psi;
     double qx, qy;
@@ -363,7 +350,7 @@ double compute_energy_twisted(const cd* d_psi, double qx, double qy) {
     );
     return total_energy * dx * dx * dx;   // elemento de volumen 3D
 }
-
+//=================================================================================================================================================================
 
 
 
@@ -371,9 +358,17 @@ double compute_energy_twisted(const cd* d_psi, double qx, double qy) {
 
 int main(int argc, char* argv[]) {
 
+    //Parametro computacionales 
+    dim3 Threads(8, 8, 8);
+    dim3 Blocks((Nx + 7) / 8, (Ny + 7) / 8, (Nz + 7) / 8);
+
+    int max_iter = 80000;
+    double tol = 1e-10 * Ntot;
+    int restart_period = 100;
+
     if (argc < 8) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat [lifshitz_on=1]" << std::endl;
+                  << " Nx Ny Nz Nv dx By seed.dat [k1=1]" << std::endl;
         return 1;
     }
 
@@ -388,14 +383,14 @@ int main(int argc, char* argv[]) {
 
     Lx = Nx * dx;
     Ly = Ny * dx;
-    Bz = 2.0 * M_PI * Nv / (Lx * Ly);   // igual que en 2D, no depende de Nz
+    Bz = 2.0 * M_PI * Nv / (Lx * Ly);  
 
     int Ntot = Nx * Ny * Nz;
 
     std::cout << "Nx=" << Nx << " Ny=" << Ny << " Nz=" << Nz << " Nv=" << Nv
-              << " dx=" << dx << " Bz(fuera de plano, ligado a Nv)=" << Bz
+              << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
               << " By(en plano)=" << By
-              << " lifshitz_on=" << lifshitz_on << "\n";
+              << " k1=" << k1 << "\n";
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
@@ -404,7 +399,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_Lx, &Lx, sizeof(double));
     cudaMemcpyToSymbol(d_Bz, &Bz, sizeof(double));
     cudaMemcpyToSymbol(d_By, &By, sizeof(double));
-    cudaMemcpyToSymbol(d_lifshitz_on, &lifshitz_on, sizeof(int));
+    cudaMemcpyToSymbol(d_k1, &k1, sizeof(double));
 
     std::vector<cd> psi (Ntot);
     thrust::device_vector<cd> d_psi(Ntot);
@@ -421,13 +416,6 @@ int main(int argc, char* argv[]) {
     cd* trial_ptr = thrust::raw_pointer_cast(trial.data());
     cd* g_trial_ptr = thrust::raw_pointer_cast(g_trial.data());
 
-    // CAMBIO 3D: grilla de threads/blocks en 3D
-    dim3 Threads(8, 8, 8);
-    dim3 Blocks((Nx + 7) / 8, (Ny + 7) / 8, (Nz + 7) / 8);
-
-    int max_iter = 80000;
-    double tol = 1e-10 * Ntot;
-    int restart_period = 100;
 
     // CAMBIO 3D: el seed file debe tener Nx*Ny*Nz pares (r,im), en orden
     // i mas rapido, luego j, luego k (mismo orden que hidx3).
@@ -438,7 +426,8 @@ int main(int argc, char* argv[]) {
     }
     d_psi = psi;
 
-    std::ofstream file("grad2_gpu3d.dat");
+    //Log de energía y gradiente cuadrado
+    std::ofstream file("run_log.dat");
     file<<std::setprecision(14);
 
 
@@ -447,6 +436,8 @@ int main(int argc, char* argv[]) {
     cudaEventCreate(&t_stop);
     cudaEventRecord(t_start);
 
+
+    //Loop principal
     for(int k = 0; k < max_iter; k++){
         compute_gradient<<<Blocks,Threads>>>(psi_ptr, grad_ptr);
         cudaDeviceSynchronize();
@@ -497,23 +488,22 @@ int main(int argc, char* argv[]) {
         grad_old_ptr = thrust::raw_pointer_cast(d_grad_old.data());
     }
 
+
+
     cudaEventRecord(t_stop);
     cudaEventSynchronize(t_stop);
     float elapsed_ms = 0.0f;
     cudaEventElapsedTime(&elapsed_ms, t_start, t_stop);
     cudaEventDestroy(t_start);
     cudaEventDestroy(t_stop);
-    std::cout << "Main loop elapsed time: " << elapsed_ms / 1000.0f << " s ("
+
+    std::cout << "Tiempo: " << elapsed_ms / 1000.0f << " s ("
               << elapsed_ms << " ms)\n";
 
     thrust::copy(d_psi.begin(), d_psi.end(), psi.begin());
 
-    // CAMBIO 3D: conteo de vortices omitido a pedido.
-    std::cout << "Final betaA: " << compute_betaA(psi) << "\n";
-    write_field(psi, "density_gpu3d.dat", true);
-    write_field(psi, "phase_gpu3d.dat", false);
-
-    print_total_current(psi_ptr,Ntot);
+    write_field(psi, "density.dat", true);
+    write_field(psi, "phase.dat", false);
 
     //Calculo de stiffness
 
