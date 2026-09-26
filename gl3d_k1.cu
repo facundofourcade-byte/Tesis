@@ -1,17 +1,3 @@
-// ============================================================================
-//
-// 5) Direccion z: A_z=0 (sin link de gauge), pero condicion de contorno de
-//    Neumann (dpsi/dz=0 en z=0 y z=(Nz-1)*dx), en vez de periodica. La
-//    energia cinetica en z se define como suma de bonds hacia adelante SOLO
-//    hasta k=Nz-2 (no existe bond mas alla del ultimo plano). El gradiente,
-//    derivado exactamente de esa energia truncada, da un vecino fantasma que
-//    "clona" el valor de frontera (psi[-1]:=psi[0], psi[Nz]:=psi[Nz-1]), NO
-//    el reflejo especular (psi[-1]:=psi[1]) que usarian discretizaciones
-//    directas del Laplaciano continuo. Es la unica forma exactamente
-//    consistente con la energia discreta definida arriba (mismo espiritu que
-//    el comentario del codigo 2D sobre diferencia centrada vs adelantada).
-// ============================================================================
-
 #include <iostream>
 #include <vector>
 #include <complex>
