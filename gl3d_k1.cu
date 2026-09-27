@@ -17,6 +17,7 @@
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/execution_policy.h>
 #include <thrust/copy.h>
+#include <thrust/transform.h>
 
 using cd = thrust::complex<double>;
 
@@ -39,7 +40,7 @@ struct energy_density_functor {
         int k = id / (d_Nx * d_Ny);
 
         cd psi0 = psi[id];
-        double x = i * d_dx
+        double x = i * d_dx;
         double y = j * d_dx;
         double z = k * d_dx;
 
@@ -61,7 +62,7 @@ struct energy_density_functor {
 
         //Link derivada discreta en y
         int jp = (j + 1) % d_Ny;
-        cd Uy = thrust::exp(cd(0.0, - d_Bz * x * d_dx))
+        cd Uy = thrust::exp(cd(0.0, - d_Bz * x * d_dx));
         cd psi_yp = Uy * psi[i + d_Nx * (jp + d_Ny * k)];
         cd Dy = (psi_yp - psi0) / d_dx;
 
@@ -250,107 +251,8 @@ struct polak_ribiere_op {
 };
 
 
-//=================================================================================================================================================================
-struct energy_density_functor_twisted {
-    const cd* psi;
-    double qx, qy;
-
-    energy_density_functor_twisted(const cd* _psi, double _qx, double _qy) : psi(_psi) , qx(_qx) , qy(_qy){}
-
-    __device__ double operator()(int id) const {
-        int i = id % d_Nx;
-        int t = id / d_Nx;
-        int j = t % d_Ny;
-        int k = t / d_Ny;
-
-        cd psi0 = psi[id];
-        double y = j * d_dx;
-        double z = k * d_dx;
-
-        // ---- Direccion X: ahora con link U_x = exp(-i B_y z dx) en CADA
-        //      salto (A_x = B_y*z != 0), mas el twist periodico de borde
-        //      (proveniente de A_y = B_z*x) igual que en el codigo 2D.
-        int ip = (i + 1) % d_Nx;
-        int im = (i - 1 + d_Nx) % d_Nx;
-
-        cd Ux_fwd = thrust::exp(cd(0, -d_By * z * d_dx));
-        cd Ux_bwd = thrust::conj(Ux_fwd);
-
-        cd psi_next_x = Ux_fwd * psi[ip + d_Nx*(j + d_Ny*k)];
-        if (i == d_Nx - 1)
-            psi_next_x *= thrust::exp(cd(0, (d_Bz * d_Lx * y) + qx*d_Lx ));
-
-        cd psi_prev_x = Ux_bwd * psi[im + d_Nx*(j + d_Ny*k)];
-        if (i == 0)
-            psi_prev_x *= thrust::exp(cd(0, (-d_Bz * d_Lx * y) - qx*d_Lx));
-
-        cd Dx = (psi_next_x - psi0) / d_dx;                 // kinetico (adelantada, covariante)
-        cd Dx_centered = (psi_next_x - psi_prev_x) / (2.0 * d_dx); // para Lifshitz
-
-        // ---- Direccion Y: link de Landau habitual (A_y = B_z*x), sin cambios
-        double phase = d_Bz * (i * d_dx) * d_dx;
-        int jp = (j + 1) % d_Ny;
-
-        cd Uy = thrust::exp(cd(0, -phase));
-
-        cd psi_next_y = Uy * psi[i + d_Nx*(jp + d_Ny*k)];
-        if (j == d_Ny - 1)
-            psi_next_y *= thrust::exp(cd(0,qy*d_Ny*d_dx ));
-
-        cd Dy = (psi_next_y - psi0) / d_dx;
-
-        // ---- Direccion Z: sin link (A_z=0), Neumann -> solo Nz-1 enlaces,
-        //      el ultimo plano (k = Nz-1) no aporta enlace hacia adelante.
-        double kinetic_z = 0.0;
-        if (k < d_Nz - 1) {
-            cd psi_zp = psi[i + d_Nx*(j + d_Ny*(k+1))];
-            cd Dz = (psi_zp - psi0) / d_dx;
-            kinetic_z = thrust::norm(Dz);
-        }
-
-        // Potencial: 1/2 * (1 - |psi|^2)^2
-        double psi_sq = thrust::norm(psi0);
-        double potential = 0.5 * (1.0 - psi_sq) * (1.0 - psi_sq);
-
-        // Termino de Lifshitz B_y*Im(psi* D_x psi), con D_x covariante
-        // (el link ya incorpora automaticamente el -B_y^2 z |psi|^2).
-        // Se anula si d_lifshitz_on == 0 (GL estandar).
-        double lifshitz = d_lifshitz_on ?
-            d_By * (thrust::conj(psi0) * Dx_centered).imag() : 0.0;
-
-        return thrust::norm(Dx) + thrust::norm(Dy) + kinetic_z + potential + lifshitz;
-    }
-};
-
-
-
-double compute_energy_twisted(const cd* d_psi, double qx, double qy) {
-    energy_density_functor_twisted f(d_psi,qx,qy);
-    double total_energy = thrust::transform_reduce(
-        thrust::device,
-        thrust::counting_iterator<int>(0),
-        thrust::counting_iterator<int>(Nx * Ny * Nz),
-        f,
-        double(0.0),
-        thrust::plus<double>()
-    );
-    return total_energy * dx * dx * dx;   // elemento de volumen 3D
-}
-//=================================================================================================================================================================
-
-
-
-
-
 int main(int argc, char* argv[]) {
 
-    //Parametro computacionales 
-    dim3 Threads(8, 8, 8);
-    dim3 Blocks((Nx + 7) / 8, (Ny + 7) / 8, (Nz + 7) / 8);
-
-    int max_iter = 80000;
-    double tol = 1e-10 * Ntot;
-    int restart_period = 100;
 
     if (argc < 8) {
         std::cerr << "Uso: " << argv[0]
@@ -365,13 +267,20 @@ int main(int argc, char* argv[]) {
     dx = std::stod(argv[5]);
     By = std::stod(argv[6]);
     std::ifstream seed_file(argv[7]);
-    k1 = (argc >= 9) ? std::stoi(argv[8]) : 1;
+    k1 = (argc >= 9) ? std::stod(argv[8]) : 1;
 
     Lx = Nx * dx;
     Ly = Ny * dx;
     Bz = 2.0 * M_PI * Nv / (Lx * Ly);  
-
     int Ntot = Nx * Ny * Nz;
+
+    //Parametro computacionales 
+    dim3 Threads(8, 8, 8);
+    dim3 Blocks((Nx + 7) / 8, (Ny + 7) / 8, (Nz + 7) / 8);
+
+    int max_iter = 80000;
+    double tol = 1e-10 * Ntot;
+    int restart_period = 100;
 
     std::cout << "Nx=" << Nx << " Ny=" << Ny << " Nz=" << Nz << " Nv=" << Nv
               << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
@@ -487,23 +396,6 @@ int main(int argc, char* argv[]) {
 
     write_field(psi, "density.dat", true);
     write_field(psi, "phase.dat", false);
-
-    //Calculo de stiffness
-
-    double qx[13] = {-0.006,-0.005,-0.004,-0.003,-0.002,-0.001, 0.0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006};
-    double qy[13] = {0.0};
-    double F[13] = {0.0};
-    for(int i = 0; i < 13; i+=1){
-      thrust::transform(thrust::counting_iterator<int>(0), thrust::counting_iterator<int>(Nx*Ny*Nz), d_psi.begin(), d_psi.begin(),
-      [=] __device__ (int id, cd p){ return p * thrust::exp(cd(0.0, qx[i]*d_dx*(id % d_Nx) + qy[i]*d_dx*((id / d_Nx) % d_Ny))); });
-
-      F[i] = compute_energy_twisted(psi_ptr, qx[i], qy[i]);
-
-      thrust::transform(thrust::counting_iterator<int>(0), thrust::counting_iterator<int>(Nx*Ny*Nz), d_psi.begin(), d_psi.begin(),
-      [=] __device__ (int id, cd p){ return p * thrust::exp(-cd(0.0, qx[i]*d_dx*(id % d_Nx) + qy[i]*d_dx*((id / d_Nx) % d_Ny)) ); });
-
-      std::cout << "F = " << F[i] << " q= " << qx[i] <<std::endl;
-    }
 
     return 0;
 }
