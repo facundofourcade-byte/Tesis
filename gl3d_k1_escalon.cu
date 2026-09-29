@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cassert>
+#include <string>
 
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
@@ -266,9 +267,9 @@ int main(int argc, char* argv[]) {
 
     k1[0] = 1.0; k2[0] = 2.0; alfa[0] = 0.2;
 
-    if (argc < 8) {
+    if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) > std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat kd" << std::endl;
+                  << " Nx Ny Nz Nv dx By seed.dat kd, kd entre 0 y Nz" << std::endl;
         return 1;
     }
 
@@ -279,7 +280,7 @@ int main(int argc, char* argv[]) {
     dx = std::stod(argv[5]);
     By = std::stod(argv[6]);
     std::ifstream seed_file(argv[7]);
-    int kd = std::stoi(argv[8]);
+    kd = std::stoi(argv[8]);
     k1[1]   = 0.0;
     k2[1]   = 1.0;
     alfa[1] = 1.0;
