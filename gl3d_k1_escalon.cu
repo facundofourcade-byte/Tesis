@@ -266,6 +266,7 @@ struct polak_ribiere_op {
 int main(int argc, char* argv[]) {
 
     k1[0] = 1.0; k2[0] = 2.0; alfa[0] = 0.2;
+    k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
 
     if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) > std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
@@ -281,9 +282,6 @@ int main(int argc, char* argv[]) {
     By = std::stod(argv[6]);
     std::ifstream seed_file(argv[7]);
     kd = std::stoi(argv[8]);
-    k1[1]   = 0.0;
-    k2[1]   = 1.0;
-    alfa[1] = 1.0;
 
     Lx = Nx * dx;
     Ly = Ny * dx;
@@ -333,12 +331,20 @@ int main(int argc, char* argv[]) {
     cd* trial_ptr = thrust::raw_pointer_cast(trial.data());
     cd* g_trial_ptr = thrust::raw_pointer_cast(g_trial.data());
 
-    for(auto& p : psi){
-      double r, im;
-      if (!(seed_file >> r >> im)) break;
-      p = cd(r, im);
+    //Chequea que abra bien el seed y que coincida con la cantidad de entradas esperadas (Ntot)
+    int nread = 0;
+    for (auto& p : psi) {
+        double r, im;
+        if (!(seed_file >> r >> im)) break;
+        p = cd(r, im);
+        nread++;
     }
-    d_psi = psi;
+    double extra;
+    if (nread != Ntot || (seed_file >> extra)) {
+        std::cerr << "Semilla invalida: se leyeron " << nread << " de " << Ntot
+                  << " sitios (o sobran datos). Esperado: Nx*Ny*Nz lineas 'Re Im'.\n";
+        return 1;
+    }
 
     //Log de energía y gradiente cuadrado
     std::ofstream file("run_log.dat");
