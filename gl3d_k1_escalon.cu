@@ -23,21 +23,17 @@ using cd = thrust::complex<double>;
 
 int Nx, Ny, Nz, Nv;
 double dx, Lx, Ly, Bz, By;
-// CAMBIO: parametros escalon en z, [0] -> region 1 (0 <= z < d), [1] -> region 2 (d <= z <= Lz)
 double k1[2], k2[2], alfa[2];
-// CAMBIO: kd = primer indice k con z = k*dx >= d (los nodos k < kd son region 1)
 int kd;
 
 __constant__ int d_Nx, d_Ny, d_Nz;
 __constant__ double d_dx, d_Lx, d_Bz, d_By;
-// CAMBIO: copias en device de los parametros escalon y del indice de la interfase
 __constant__ double d_k1[2], d_k2[2], d_alfa[2];
 __constant__ int d_kd;
 
 inline int hidx3(int i,int j,int k){ return i + Nx*(j + Ny*k); }
 
 
-// CAMBIO: el functor recibe la region r (0 o 1) y usa los parametros de esa region
 struct energy_density_functor {
     const cd* psi;
     int r;
@@ -85,21 +81,17 @@ struct energy_density_functor {
 
         //Energia potencial
         double psi_sq = thrust::norm(psi0);
-        double potential = 0.5 * psi_sq * psi_sq - d_alfa[r] * psi_sq;   // CAMBIO: alfa(z)
+        double potential = 0.5 * psi_sq * psi_sq - d_alfa[r] * psi_sq;  
 
         //Término lifshitz lineal
         cd Dx_centered = (psi_xp - psi_xm) / (2.0 * d_dx);   
-        double lifshitz = d_k1[r] * d_By * (thrust::conj(psi0) * Dx_centered).imag();   // CAMBIO: k1(z)
+        double lifshitz = d_k1[r] * d_By * (thrust::conj(psi0) * Dx_centered).imag(); 
 
-        // CAMBIO: k2(z) multiplica todo |Dpsi|^2. El link en z (k -> k+1) lleva el k2 del nodo k,
-        // asi el link que cruza z = d usa k2_1 (region 1) y el siguiente k2_2.
         return d_k2[r] * (thrust::norm(Dx) + thrust::norm(Dy) + kinetic_z) + potential + lifshitz;
     }
 };
 
 
-// CAMBIO: la energia se calcula por separado en los dos sectores:
-// region 1 = ids [0, Nx*Ny*kd), region 2 = ids [Nx*Ny*kd, Ntot)
 double compute_energy(const cd* d_psi, int Ntot) {
     int lim[3] = {0, Nx * Ny * kd, Ntot};
     double total_energy = 0.0;
@@ -138,7 +130,7 @@ __global__ void compute_gradient(const cd* psi, cd* grad){
     if(i >= d_Nx || j >= d_Ny || k >= d_Nz) return;
 
     int id = i + d_Nx * (j + d_Ny * k);
-    int r = (k < d_kd) ? 0 : 1;   // CAMBIO: region del nodo
+    int r = (k < d_kd) ? 0 : 1;   
     cd psi0 = psi[id];
     double x = i * d_dx;
     double y = j * d_dx;
@@ -172,20 +164,16 @@ __global__ void compute_gradient(const cd* psi, cd* grad){
     cd psi_zp = psi[i + d_Nx * (j + d_Ny * kp)];
     cd psi_zm = psi[i + d_Nx * (j + d_Ny * km)];
 
-    // CAMBIO: laplaciano en plano (k2 constante dentro del plano k) separado del de z
     cd lap_xy = (psi_xp + psi_xm + psi_yp + psi_ym - 4.0 * psi0) / (d_dx * d_dx);
 
-    // CAMBIO: termino en z en forma de flujo, d/dz (k2 dpsi/dz). El link de arriba (k -> k+1) lleva
-    // k2 del nodo k y el de abajo (k-1 -> k) k2 del nodo k-1. Esto impone en forma discreta el empalme
-    // k2_- dz psi(d-) = k2_+ dz psi(d+) y sigue siendo Neumann en z = 0, Lz (kp = k o km = k anulan el flujo).
     int rm = (km < d_kd) ? 0 : 1;
     cd div_z = (d_k2[r] * (psi_zp - psi0) - d_k2[rm] * (psi0 - psi_zm)) / (d_dx * d_dx);
 
-    cd grad_val = -d_k2[r] * lap_xy - div_z - (d_alfa[r] - thrust::norm(psi0)) * psi0;   // CAMBIO: k2(z), alfa(z)
+    cd grad_val = -d_k2[r] * lap_xy - div_z - (d_alfa[r] - thrust::norm(psi0)) * psi0; 
 
     //Aporte termino lineal Lifshitz
     cd Dx_centered = (psi_xp - psi_xm) / (2.0 * d_dx);
-    grad_val += cd(0.0, -d_By * d_k1[r]) * Dx_centered;   // CAMBIO: k1(z)
+    grad_val += cd(0.0, -d_By * d_k1[r]) * Dx_centered;  
 
     grad[id] = grad_val;
 }
@@ -276,11 +264,11 @@ struct polak_ribiere_op {
 
 int main(int argc, char* argv[]) {
 
+    k1[0] = 1.0; k2[0] = 2.0; alfa[0] = 0.2;
 
-    // CAMBIO: nuevos argumentos d y los parametros de cada region
-    if (argc < 15) {
+    if (argc < 8) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat d k1_1 k1_2 k2_1 k2_2 alfa_1 alfa_2" << std::endl;
+                  << " Nx Ny Nz Nv dx By seed.dat kd" << std::endl;
         return 1;
     }
 
@@ -291,18 +279,15 @@ int main(int argc, char* argv[]) {
     dx = std::stod(argv[5]);
     By = std::stod(argv[6]);
     std::ifstream seed_file(argv[7]);
-    // CAMBIO: d (posicion del escalon) y parametros de cada region
-    double d = std::stod(argv[8]);
-    k1[0]   = std::stod(argv[9]);   k1[1]   = std::stod(argv[10]);
-    k2[0]   = std::stod(argv[11]);  k2[1]   = std::stod(argv[12]);
-    alfa[0] = std::stod(argv[13]);  alfa[1] = std::stod(argv[14]);
+    int kd = std::stoi(argv[8]);
+    k1[1]   = 0.0;
+    k2[1]   = 1.0;
+    alfa[1] = 1.0;
 
     Lx = Nx * dx;
     Ly = Ny * dx;
     Bz = 2.0 * M_PI * Nv / (Lx * Ly);  
     int Ntot = Nx * Ny * Nz;
-    // CAMBIO: indice de la interfase. El -1e-9 evita que el redondeo mande un nodo con z == d a la region 1.
-    kd = std::min(std::max((int)std::ceil(d / dx - 1e-9), 0), Nz);
 
     //Parametro computacionales 
     dim3 Threads(8, 8, 8);
@@ -315,10 +300,10 @@ int main(int argc, char* argv[]) {
     std::cout << "Nx=" << Nx << " Ny=" << Ny << " Nz=" << Nz << " Nv=" << Nv
               << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
               << " By(en plano)=" << By
-              << " d=" << d << " (kd=" << kd << ")"
+              << " d=" << kd * dx << " (kd=" << kd << ")"
               << " k1=(" << k1[0] << "," << k1[1] << ")"
               << " k2=(" << k2[0] << "," << k2[1] << ")"
-              << " alfa=(" << alfa[0] << "," << alfa[1] << ")\n";   // CAMBIO
+              << " alfa=(" << alfa[0] << "," << alfa[1] << ")\n";
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
@@ -327,7 +312,6 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_Lx, &Lx, sizeof(double));
     cudaMemcpyToSymbol(d_Bz, &Bz, sizeof(double));
     cudaMemcpyToSymbol(d_By, &By, sizeof(double));
-    // CAMBIO: copia de los parametros escalon e indice de interfase
     cudaMemcpyToSymbol(d_k1, k1, 2 * sizeof(double));
     cudaMemcpyToSymbol(d_k2, k2, 2 * sizeof(double));
     cudaMemcpyToSymbol(d_alfa, alfa, 2 * sizeof(double));
