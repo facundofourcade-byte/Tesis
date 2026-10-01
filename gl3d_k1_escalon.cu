@@ -1,3 +1,5 @@
+%%writefile gl3d_k1_esc.cu
+
 #include <iostream>
 #include <vector>
 #include <complex>
@@ -345,6 +347,7 @@ int main(int argc, char* argv[]) {
                   << " sitios (o sobran datos). Esperado: Nx*Ny*Nz lineas 'Re Im'.\n";
         return 1;
     }
+    d_psi = psi; 
 
     //Log de energía y gradiente cuadrado
     std::ofstream file("run_log.dat");
