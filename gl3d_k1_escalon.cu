@@ -240,7 +240,7 @@ double line_search_wolfe(
 
         compute_gradient<<<Blocks,Threads>>>(trial, g_trial);
         cudaDeviceSynchronize();
-        double slope = dot(g_trial, dir, Ntot).real();
+        double slope = 2*dx*dx*dx*dot(g_trial, dir, Ntot).real();
 
         if(std::abs(slope) <= c2 * std::abs(slope0))
             return alpha;
