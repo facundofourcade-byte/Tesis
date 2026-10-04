@@ -268,7 +268,7 @@ int main(int argc, char* argv[]) {
     k1[0] = 1.0; k2[0] = 2.0; alfa[0] = 0.2;
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
 
-    if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) > std::stoi(argv[3])) {
+    if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
                   << " Nx Ny Nz Nv dx By seed.dat kd, kd entre 0 y Nz" << std::endl;
         return 1;
