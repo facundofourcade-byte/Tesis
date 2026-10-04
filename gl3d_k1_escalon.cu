@@ -222,7 +222,7 @@ double line_search_wolfe(
     auto pdir = thrust::device_pointer_cast(dir);
 
     double E0 = compute_energy(psi, Ntot);
-    double slope0 = dot(grad, dir, Ntot).real();
+    double slope0 = 2*dx*dx*dx*dot(grad, dir, Ntot).real();
 
     for(int iter = 0; iter < 30; iter++) {
 
@@ -268,7 +268,7 @@ int main(int argc, char* argv[]) {
     k1[0] = 1.0; k2[0] = 2.0; alfa[0] = 0.2;
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
 
-    if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) > std::stoi(argv[3])) {
+    if (argc < 9 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
                   << " Nx Ny Nz Nv dx By seed.dat kd, kd entre 0 y Nz" << std::endl;
         return 1;
