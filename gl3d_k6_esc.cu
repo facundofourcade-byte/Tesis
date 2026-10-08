@@ -350,7 +350,7 @@ int main(int argc, char* argv[]) {
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat kd [sup_order=1], Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
+                  << " Nx Ny Nz Nv dx By seed.dat kd [sup_order=1]" << std::endl << " Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
         return 1;
     }
 
