@@ -346,7 +346,7 @@ int main(int argc, char* argv[]) {
     k1[0] = 1.0; k2[0] = 24.8; alfa[0] = 0.4;
     k3[0] = 0.3; k4[0] = 0.1; k6[0] = 0.05;
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
-    k3[1] = 0.0; k4[1] = 0.0; k6[1] = 0.0;
+    k3[1] = 0.0; k4[1] = 0.015; k6[1] = 0.0001;
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
@@ -355,7 +355,7 @@ int main(int argc, char* argv[]) {
     }
 
     if(argc == 10 && argv[9][0] == '0'){
-        k1[0] = k3[0] = k4[0] = k6[0] = 0.0;
+        k1[0] = k3[0] = k4[0] = k6[0] = k1[1] = k3[1] = k4[1] = k6[1] = 0.0;
         std::cout << "Sin terminos orden superior" << "\n";
     } 
     
