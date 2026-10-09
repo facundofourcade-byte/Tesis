@@ -2,8 +2,11 @@
 
 psi0 se reconstruye de density.dat y phase.dat (salida del minimizador). Al multiplicar por
 exp(i q.r) las condiciones de borde ganan el twist extra exp(i qx Lx) en x y exp(i qy Ly) en y.
+Ademas calcula f(z, q): la misma suma restringida a la capa z (el enlace z (k, k+1) va a la capa k,
+como en energy_density_functor), y chequea f(q) = sum_z f(z, q).
 
-Uso:  python twist_q.py Nx Ny Nz Nv dx By kd density.dat phase.dat [--sup 0] [--qmax Q] [--nq N]
+Uso:  python twist_q.py Nx Ny Nz Nv dx By kd density.dat phase.dat
+                        [--k4 K4_0 K4_1] [--k6 K6_0 K6_1] [--sup 0] [--qmax Q] [--nq N]
 Test: python twist_q.py --test
 """
 import argparse
@@ -16,9 +19,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# (region 0: k < kd, region 1: k >= kd), mismos valores que gl3d_k6_esc.cu
+# (region 0: k < kd, region 1: k >= kd). k4 y k6 se pueden cambiar con --k4 / --k6
 COEF = dict(k1=(1.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
-            k3=(0.3, 0.0), k4=(0.1, 0.0), k6=(0.05, 0.0))
+            k3=(0.3, 0.0), k4=(0.015, 0.0), k6=(0.0001, 0.0))
 
 
 def vecinos(f, dx, Bz, By, tx, ty):
@@ -40,15 +43,16 @@ def vecinos(f, dx, Bz, By, tx, ty):
 
 
 def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
-    """F[psi] de compute_energy del .cu. psi con forma (Nz, Ny, Nx)."""
+    """F[psi] de compute_energy del .cu y su aporte por capa z. psi con forma (Nz, Ny, Nx).
+    Devuelve (F total, array de Nz con F de cada capa)."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     reg0 = cp.arange(psi.shape[0])[:, None, None] < kd
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.empty_like(psi)                           # d_z^2: centrada, descentrada en los bordes
+    lz = cp.empty_like(psi)                           # d_z^2: centrada, Neumann en los bordes
     lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-    lz[0], lz[-1] = lz[1], lz[-2]
+    lz[0], lz[-1] = psi[1] - psi[0], psi[-2] - psi[-1]
     phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
@@ -63,7 +67,7 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
          + c["k1"] * By * (psi.conj() * Dxpsi).real
          + c["k6"] * kin_phi / dx ** 2 - c["k4"] * abs2(phi)
          - c["k3"] * By * (Dxpsi.conj() * phi).real)
-    return float(e.sum()) * dx ** 3
+    return float(e.sum()) * dx ** 3, cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 3
 
 
 def f_q(psi0, qx, qy, dx, Bz, By, kd, coef=COEF):
@@ -82,8 +86,9 @@ def selftest():
         e = [a ** 2 * (COEF["k2"][r] * l - COEF["k4"][r] * l ** 2 + COEF["k6"][r] * l ** 3
                        + a ** 2 / 2 - COEF["alfa"][r]) for r in (0, 1)]
         esperado = dx ** 3 * Nx * Ny * (kd * e[0] + (Nz - kd) * e[1])
-        got = f_q(psi0, qx, qy, dx, 0.0, 0.0, kd)
+        got, capas = f_q(psi0, qx, qy, dx, 0.0, 0.0, kd)
         assert abs(got - esperado) < 1e-10 * abs(esperado), (qx, qy, got, esperado)
+        assert np.allclose(capas, [dx ** 3 * Nx * Ny * e[k >= kd] for k in range(Nz)], rtol=1e-10)
     print("selftest ok")
 
 
@@ -92,15 +97,17 @@ def main():
     for name, t in [("Nx", int), ("Ny", int), ("Nz", int), ("Nv", int),
                     ("dx", float), ("By", float), ("kd", int), ("density", str), ("phase", str)]:
         p.add_argument(name, type=t)
+    p.add_argument("--k4", type=float, nargs=2, default=COEF["k4"], help="k4 en region 0 y 1")
+    p.add_argument("--k6", type=float, nargs=2, default=COEF["k6"], help="k6 en region 0 y 1")
     p.add_argument("--sup", type=int, default=1, help="0: sin terminos de orden superior (como sup_order)")
     p.add_argument("--qmax", type=float, default=0.5)
     p.add_argument("--nq", type=int, default=101)
     a = p.parse_args()
 
-    coef = dict(COEF)
-    if a.sup == 0:
+    coef = dict(COEF, k4=tuple(a.k4), k6=tuple(a.k6))
+    if a.sup == 0:                                    # como sup_order=0: ambas regiones
         for k in ("k1", "k3", "k4", "k6"):
-            coef[k] = (0.0, coef[k][1])
+            coef[k] = (0.0, 0.0)
 
     Lx, Ly = a.Nx * a.dx, a.Ny * a.dx
     Bz = 2 * np.pi * a.Nv / (Lx * Ly)
@@ -111,10 +118,17 @@ def main():
     psi0 = cp.asarray(np.sqrt(rho) * np.exp(1j * theta)).reshape(a.Nz, a.Ny, a.Nx)
 
     q = np.linspace(-a.qmax, a.qmax, a.nq)
-    fx = [f_q(psi0, qi, 0.0, a.dx, Bz, a.By, a.kd, coef) for qi in q]
-    fy = [f_q(psi0, 0.0, qi, a.dx, Bz, a.By, a.kd, coef) for qi in q]
-    print(f"f(0) = {f_q(psi0, 0.0, 0.0, a.dx, Bz, a.By, a.kd, coef):.14g}")
+    rx = [f_q(psi0, qi, 0.0, a.dx, Bz, a.By, a.kd, coef) for qi in q]
+    ry = [f_q(psi0, 0.0, qi, a.dx, Bz, a.By, a.kd, coef) for qi in q]
+    fx, fzx = np.array([t for t, _ in rx]), np.array([c for _, c in rx])   # fzx[iq, z]
+    fy, fzy = np.array([t for t, _ in ry]), np.array([c for _, c in ry])
+    for f, fz in [(fx, fzx), (fy, fzy)]:
+        err = np.abs(f - fz.sum(axis=1)).max()
+        assert err <= 1e-10 * np.abs(f).max(), f"f(q) != sum_z f(z,q), error {err}"
+    print(f"f(0) = {f_q(psi0, 0.0, 0.0, a.dx, Bz, a.By, a.kd, coef)[0]:.14g}  (f(q) = sum_z f(z,q) ok)")
     np.savetxt("f_q.dat", np.column_stack([q, fx, fy]), header="q  f(q,0,0)  f(0,q,0)")
+    np.savetxt("f_z_qx.dat", np.column_stack([q, fzx]), header="qx  f(z=0,qx)  f(z=1,qx) ...  (qy=0)")
+    np.savetxt("f_z_qy.dat", np.column_stack([q, fzy]), header="qy  f(z=0,qy)  f(z=1,qy) ...  (qx=0)")
 
     fig, ax = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
     for axi, fi, lab in [(ax[0], fx, "q_x"), (ax[1], fy, "q_y")]:
@@ -125,6 +139,18 @@ def main():
     ax[0].set_ylabel(r"$f(q) = F[\psi_0 e^{i q\cdot r}]$")
     fig.tight_layout()
     fig.savefig("f_q.png", dpi=150)
+
+    # f(z,q): una fila por capa (cada una con su escala en y), columnas qx y qy
+    fig, ax = plt.subplots(a.Nz, 2, figsize=(10, 2.2 * a.Nz), sharex=True, squeeze=False)
+    for z in range(a.Nz):
+        for col, fz, lab in [(0, fzx, "q_x"), (1, fzy, "q_y")]:
+            ax[z, col].plot(q, fz[:, z], lw=2, color="#2a6fdb")
+            ax[z, col].set_title(f"capa k={z}: $f(z, {lab})$", fontsize=9)
+            ax[z, col].grid(alpha=0.3)
+    ax[-1, 0].set_xlabel("$q_x$  ($q_y=0$)")
+    ax[-1, 1].set_xlabel("$q_y$  ($q_x=0$)")
+    fig.tight_layout()
+    fig.savefig("f_z_q.png", dpi=120)
 
 
 if __name__ == "__main__":
