@@ -92,7 +92,7 @@ def selftest():
     print("selftest ok")
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser()
     for name, t in [("Nx", int), ("Ny", int), ("Nz", int), ("Nv", int),
                     ("dx", float), ("By", float), ("kd", int), ("density", str), ("phase", str)]:
@@ -102,7 +102,7 @@ def main():
     p.add_argument("--sup", type=int, default=1, help="0: sin terminos de orden superior (como sup_order)")
     p.add_argument("--qmax", type=float, default=0.5)
     p.add_argument("--nq", type=int, default=101)
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     coef = dict(COEF, k4=tuple(a.k4), k6=tuple(a.k6))
     if a.sup == 0:                                    # como sup_order=0: ambas regiones
