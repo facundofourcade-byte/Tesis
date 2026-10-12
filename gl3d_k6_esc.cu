@@ -353,10 +353,10 @@ struct polak_ribiere_op {
 int main(int argc, char* argv[]) {
 
     //Quedan chequear bien los parametros de k1 y los de orden superior
-    k1[0] = 1.0; k2[0] = 24.8; alfa[0] = 0.4;
-    k3[0] = 0.3; k4[0] = 0.1; k6[0] = 0.05;
+    k1[0] = 0.0; k2[0] = 24.8; alfa[0] = 0.4;
+    k3[0] = 0.0; k4[0] = 0.25; k6[0] = 0.001;
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
-    k3[1] = 0.0; k4[1] = 0.015; k6[1] = 0.0001;
+    k3[1] = 0.0; k4[1] = 0.0; k6[1] = 0.0;
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
