@@ -1,4 +1,4 @@
-"""f(q) = F[psi0 exp(i q.r)] con q = (qx, qy, 0), usando el mismo F que gl3d_k6_esc.cu.
+"""f(q) = F[psi0 exp(i q.r)] con q = (qx, qy, 0), usando el mismo F que gl3d.cu.
 
 psi0 se reconstruye de density.dat y phase.dat (salida del minimizador). Al multiplicar por
 exp(i q.r) las condiciones de borde ganan el twist extra exp(i qx Lx) en x y exp(i qy Ly) en y.
@@ -19,7 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# (region 0: k < kd, region 1: k >= kd). Los mismos que main() de gl3d_k6_esc.cu;
+# (region 0: k < kd, region 1: k >= kd). Los mismos que main() de gl3d.cu;
 # k4 y k6 se pueden cambiar con --k4 / --k6 (el binario los recibe en argv[9], argv[10])
 COEF = dict(k1=(0.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
             k3=(0.0, 0.0), k4=(0.25, 0.0), k6=(0.001, 0.0))

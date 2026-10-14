@@ -1,4 +1,4 @@
-"""Corre gl3d_k6_esc (binario de gl3d_k6_esc.cu) y despues calcula f(q) con twist_q.py.
+"""Corre gl3d (binario de gl3d.cu) y despues calcula f(q) con twist_q.py.
 
 El binario tiene que estar en el directorio desde donde se corre este script. Deja ahi
 density.dat, phase.dat y run_log.dat, y twist_q.py usa density.dat y phase.dat para f(q).
@@ -12,9 +12,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import twist_q
 
-BINARIO = "./gl3d_k6_esc"
+BINARIO = "./gl3d"
 
-# Parametros del binario: gl3d_k6_esc Nx Ny Nz Nv dx By seed.dat kd [k4 k6]
+# Parametros del binario: gl3d Nx Ny Nz Nv dx By seed.dat kd [k4 k6]
 Nx, Ny, Nz, Nv = 64, 64, 8, 4
 dx, By = 0.5, 0.0
 SEED = "seed.dat"           # Nx*Ny*Nz lineas 'Re Im'
