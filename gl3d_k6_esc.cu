@@ -94,7 +94,7 @@ __device__ cd D2(const cd* f, int i, int j, int k) {
     Vecinos n(f, i, j, k);
     cd lap = n.xp + n.xm + n.yp + n.ym - 4.0 * f0;
 
-    if (k == 0)             lap += f[didx(i,j,1)] + f[didx(i,j,2)]  - 2.0 * f0;                         //CORRECCION 1  
+    if (k == 0)             lap += f0 - 2.0 * f[didx(i,j,1)] + f[didx(i,j,2)];                          //CORRECCION 1  
     else if (k == d_Nz - 1) lap += f0 - 2.0 * f[didx(i,j,d_Nz - 2)] + f[didx(i,j,d_Nz - 3)];            //CORRECCION 1                
     else                    lap += f[didx(i,j,k+1)] - 2.0 * f0 + f[didx(i,j,k-1)];
 
@@ -102,28 +102,20 @@ __device__ cd D2(const cd* f, int i, int j, int k) {
 }
 
 
-//Calcula Sum_j D_j(c D_j f) 
+//Calcula Sum_j D_j(c D_j f) = d/df^* de sum c |D f|^2 (enlaces adelantados, como en energy_density_functor).
+//En z cada enlace (k, k+1) lleva el c de la region de k. En los bordes la derivada ya es descentrada:
+//en k=0 solo existe el enlace hacia k=1 (diferencia hacia adelante) y en k=Nz-1 solo el que viene
+//de k=Nz-2 (diferencia hacia atras); el enlace hacia afuera no existe y no se lee fuera de la red.
 __device__ cd Kc(const cd* f, const double* c, int i, int j, int k) {
-    int r = region(k), rp = region(k+1), rm = region(k-1);
+    int r = region(k);
     cd f0 = f[didx(i,j,k)];
     Vecinos n(f, i, j, k);
 
     cd lap_xy = (n.xp + n.xm + n.yp + n.ym - 4.0 * f0) / (d_dx * d_dx);
-    cd div_z;
 
-    double cp = (c[r] + c[rp]) * 0.5, cm = (c[r] + c[rm]) * 0.5;
-    cd fp = f[didx(i,j,k+1)] - f0;
-    cd fm = f0 - f[didx(i,j,k-1)];
-
-    if(k == 0){
-        div_z = c[r]*fp - 2.0*c[region(k+1)]*(f[didx(i,j,k+2)] - f[didx(i,j,k+1)])
-                +c[region(k+2)]*(f[didx(i,j,k+2)] - f[didx(i,j,k+1)]);
-    }
-    else if(k == d_Nz - 1){
-        div_z = c[r]*fm - 2.0*c[region(k-1)]*fm
-                +c[region(k-2)]*(f[didx(i,j,k-2)] - f[didx(i,j,k-1)]);
-    } 
-    else div_z = cp*fp - cm*fm;
+    cd div_z = 0.0;
+    if (k < d_Nz - 1) div_z += c[r] * (f[didx(i,j,k+1)] - f0);
+    if (k > 0)        div_z -= c[region(k-1)] * (f0 - f[didx(i,j,k-1)]);
 
     return -c[r] * lap_xy - div_z / (d_dx * d_dx);
 }
@@ -156,7 +148,7 @@ void compute_chi(const cd* psi){
 }
 
 // grad = k2 D^2 psi + (|psi|^2 - alfa) psi + k1 By Dx psi + k6 D^6 psi - k4 D^4 psi - k3 By/2 {D^2, Dx} psi
-// con los terminos de orden superior escritos como (D^2)^+ chi - k3 By/2 Dx D^2 psi,
+// con los terminos de orden superior escritos como D2(chi) - k3 By/2 Dx D^2 psi
 
 __global__ void kernel_grad(const cd* psi, const cd* phi, const cd* chi, cd* grad){
     int i,j,k;
@@ -196,16 +188,13 @@ struct energy_density_functor {
         Vecinos n(psi, i, j, k);
         Vecinos m(phi, i, j, k);
 
-        //|Dpsi|^2 y |D D^2psi|^2
-        //CORRECCION 2: Tambien hay que tener en cuenta el aporte a la energia en k=Nz-1
+        //|Dpsi|^2 y |D D^2psi|^2 sumados sobre enlaces: el sitio k aporta el enlace (k, k+1).
+        //El enlace (Nz-2, Nz-1) ya lo aporta el sitio Nz-2, asi que k=Nz-1 no suma enlace en z.
         double kin_psi = thrust::norm(n.xp - psi0) + thrust::norm(n.yp - psi0);
         double kin_phi = thrust::norm(m.xp - phi0) + thrust::norm(m.yp - phi0);
         if (k < d_Nz - 1) {
             kin_psi += thrust::norm(psi[didx(i,j,k+1)] - psi0);
             kin_phi += thrust::norm(phi[didx(i,j,k+1)] - phi0);
-        } else {
-            kin_psi += thrust::norm(psi0 - psi[didx(i,j,k-1)]);             //CORRECCION 2
-            kin_phi += thrust::norm(phi0 - phi[didx(i,j,k-1)]);             //CORRECCION 2
         }
 
         //Energia potencial
