@@ -89,14 +89,30 @@ __device__ cd Dx(const cd* f, int i, int j, int k) {
 
 
 //CORRECCION 1: Las condiciones de borde en z son libres, no Neumann. 
-__device__ cd D2(const cd* f, int i, int j, int k) {
+//En z: centrada en el interior y descentrada (1,-2,1) en k=0 y k=Nz-1.
+//adj = true aplica el adjunto (D^2)^+, que pide el gradiente: con el stencil descentrado
+//la matriz de d_z^2 no es simetrica, y su traspuesta lleva al gradiente los terminos de
+//borde de la variacion (los que dan las condiciones naturales). Solo difiere de D^2 en
+//los planos 0..2 y Nz-3..Nz-1: la columna k recibe de las filas interiores k-1, k, k+1
+//y de las filas de borde 0 y Nz-1.
+__device__ cd D2(const cd* f, int i, int j, int k, bool adj) {
+    const double c[3] = {1.0, -2.0, 1.0};   //stencil de borde: f_b - 2 f_b+-1 + f_b+-2
+    int N = d_Nz - 1;
     cd f0 = f[didx(i,j,k)];
     Vecinos n(f, i, j, k);
     cd lap = n.xp + n.xm + n.yp + n.ym - 4.0 * f0;
 
-    if (k == 0)             lap += f0 - 2.0 * f[didx(i,j,1)] + f[didx(i,j,2)];                          //CORRECCION 1  
-    else if (k == d_Nz - 1) lap += f0 - 2.0 * f[didx(i,j,d_Nz - 2)] + f[didx(i,j,d_Nz - 3)];            //CORRECCION 1                
-    else                    lap += f[didx(i,j,k+1)] - 2.0 * f0 + f[didx(i,j,k-1)];
+    if (!adj) {
+        if (k == 0)      lap += f0 - 2.0 * f[didx(i,j,1)] + f[didx(i,j,2)];                 //CORRECCION 1
+        else if (k == N) lap += f0 - 2.0 * f[didx(i,j,N - 1)] + f[didx(i,j,N - 2)];         //CORRECCION 1
+        else             lap += f[didx(i,j,k+1)] - 2.0 * f0 + f[didx(i,j,k-1)];
+    } else {
+        if (k >= 2)          lap += f[didx(i,j,k-1)];              //fila k-1
+        if (k >= 1 && k < N) lap -= 2.0 * f0;                      //fila k
+        if (k <= N - 2)      lap += f[didx(i,j,k+1)];              //fila k+1
+        if (k <= 2)          lap += c[k] * f[didx(i,j,0)];         //fila 0
+        if (N - k <= 2)      lap += c[N - k] * f[didx(i,j,N)];     //fila Nz-1
+    }
 
     return -lap / (d_dx * d_dx);
 }
@@ -128,12 +144,12 @@ void compute_phi(const cd* psi){
         thrust::device_pointer_cast(phi_buf),
         [psi] __device__ (int id){
             int i = id % d_Nx, j = (id / d_Nx) % d_Ny, k = id / (d_Nx * d_Ny);
-            return D2(psi, i, j, k);   
+            return D2(psi, i, j, k, false);
         });
 }
 
 // chi = k6 D^4 psi - k4 D^2 psi - k3 By/2 Dx psi en chi_buf, con los coeficientes adentro
-// (k6 por enlace via Kc, k4 y k3 por sitio) para que D2(chi) tome el de cada lado en la interfaz
+// (k6 por enlace via Kc, k4 y k3 por sitio) para que (D^2)^+ chi tome el de cada lado en la interfaz
 
 void compute_chi(const cd* psi){
     const cd* phi = phi_buf;                                        // copia local: la lambda de device no puede leer el global de host
@@ -148,7 +164,7 @@ void compute_chi(const cd* psi){
 }
 
 // grad = k2 D^2 psi + (|psi|^2 - alfa) psi + k1 By Dx psi + k6 D^6 psi - k4 D^4 psi - k3 By/2 {D^2, Dx} psi
-// con los terminos de orden superior escritos como D2(chi) - k3 By/2 Dx D^2 psi
+// con los terminos de orden superior escritos como (D^2)^+ chi - k3 By/2 Dx D^2 psi
 
 __global__ void kernel_grad(const cd* psi, const cd* phi, const cd* chi, cd* grad){
     int i,j,k;
@@ -159,7 +175,7 @@ __global__ void kernel_grad(const cd* psi, const cd* phi, const cd* chi, cd* gra
         cd grad_val = Kc(psi, d_k2, i, j, k) - (d_alfa[r] - thrust::norm(psi0)) * psi0 + d_k1[r] * d_By * Dx(psi, i, j, k);
 
         //Terminos orden superior
-        grad_val += D2(chi, i, j, k) - 0.5 * d_k3[r] * d_By * Dx(phi, i, j, k);   
+        grad_val += D2(chi, i, j, k, true) - 0.5 * d_k3[r] * d_By * Dx(phi, i, j, k);   
     
         grad[didx(i,j,k)] = grad_val;
     }
