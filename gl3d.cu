@@ -40,7 +40,6 @@ inline int hidx3(int i,int j,int k){ return i + Nx*(j + Ny*k); }
 __device__ inline int didx(int i,int j,int k){ return i + d_Nx*(j + d_Ny*k); }
 __device__ inline int region(int k){ return (k < d_kd) ? 0 : 1; }
 
-//Indices del thread; devuelve true si cae fuera de la red
 __device__ inline bool site(int &i, int &j, int &k){
     i = blockIdx.x * blockDim.x + threadIdx.x;
     j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -59,7 +58,7 @@ struct Vecinos {
         double y = j * d_dx;
         double z = k * d_dx;
 
-        //Link en x
+        //Link Ux
         int ip = (i + 1) % d_Nx;
         int im = (i - 1 + d_Nx) % d_Nx;
         cd Ux_pos = thrust::exp(cd(0.0, -d_By * z * d_dx));
@@ -71,7 +70,7 @@ struct Vecinos {
         if (i == d_Nx - 1) xp *= thrust::exp(cd(0.0,  d_Bz * d_Lx * y));
         if (i == 0)        xm *= thrust::exp(cd(0.0, -d_Bz * d_Lx * y));
 
-        //Link en y
+        //Link Uy
         int jp = (j + 1) % d_Ny;
         int jm = (j - 1 + d_Ny) % d_Ny;
         cd Uy_pos = thrust::exp(cd(0.0, - d_Bz * x * d_dx));
@@ -89,44 +88,50 @@ __device__ cd Dx(const cd* f, int i, int j, int k) {
 }
 
 
-// D^2 f = -lap f. En z: centrada en el interior y Neumann en los bordes (fantasma f_-1 = f_0,
-// f_Nz = f_Nz-1), es decir el mismo laplaciano que sale de las diferencias adelantadas
-// de |D psi|^2 en la energia.
-// [CAMBIO 1] Antes en los bordes se usaba el stencil descentrado (f_b - 2 f_b+-1 + f_b+-2),
-// que da D^2 en el plano 0 igual al del plano 1 (y N igual a N-1): el enlace z (0,1) no
-// aporta a k6|D D^2 psi|^2 y -k4|D^2 psi|^2 se cuenta dos veces. Con k2=1, k4=0.015,
-// k6=1e-4 eso hace la parte cuadratica indefinida (autovalor -462, modo uniforme en xy
-// localizado en los planos de borde) y el estado uniforme pasa a ser un punto de silla.
-// Con Neumann el operador es simetrico (hermitico con los enlaces en x,y), asi que el
-// adjunto que pide el gradiente es el mismo operador: se elimina el argumento adj.
-__device__ cd D2(const cd* f, int i, int j, int k) {
+//CORRECCION 1: Las condiciones de borde en z son libres, no Neumann. 
+//En z: centrada en el interior y descentrada (1,-2,1) en k=0 y k=Nz-1.
+//adj = true aplica el adjunto (D^2)^+, que pide el gradiente: con el stencil descentrado
+//la matriz de d_z^2 no es simetrica, y su traspuesta lleva al gradiente los terminos de
+//borde de la variacion (los que dan las condiciones naturales). Solo difiere de D^2 en
+//los planos 0..2 y Nz-3..Nz-1: la columna k recibe de las filas interiores k-1, k, k+1
+//y de las filas de borde 0 y Nz-1.
+__device__ cd D2(const cd* f, int i, int j, int k, bool adj) {
+    const double c[3] = {1.0, -2.0, 1.0};   //stencil de borde: f_b - 2 f_b+-1 + f_b+-2
     int N = d_Nz - 1;
     cd f0 = f[didx(i,j,k)];
     Vecinos n(f, i, j, k);
     cd lap = n.xp + n.xm + n.yp + n.ym - 4.0 * f0;
 
-    if (k == 0)      lap += f[didx(i,j,1)]   - f0;                              // [CAMBIO 1]
-    else if (k == N) lap += f[didx(i,j,N-1)] - f0;                              // [CAMBIO 1]
-    else             lap += f[didx(i,j,k+1)] - 2.0 * f0 + f[didx(i,j,k-1)];
+    if (!adj) {
+        if (k == 0)      lap += f0 - 2.0 * f[didx(i,j,1)] + f[didx(i,j,2)];                 //CORRECCION 1
+        else if (k == N) lap += f0 - 2.0 * f[didx(i,j,N - 1)] + f[didx(i,j,N - 2)];         //CORRECCION 1
+        else             lap += f[didx(i,j,k+1)] - 2.0 * f0 + f[didx(i,j,k-1)];
+    } else {
+        if (k >= 2)          lap += f[didx(i,j,k-1)];              //fila k-1
+        if (k >= 1 && k < N) lap -= 2.0 * f0;                      //fila k
+        if (k <= N - 2)      lap += f[didx(i,j,k+1)];              //fila k+1
+        if (k <= 2)          lap += c[k] * f[didx(i,j,0)];         //fila 0
+        if (N - k <= 2)      lap += c[N - k] * f[didx(i,j,N)];     //fila Nz-1
+    }
 
     return -lap / (d_dx * d_dx);
 }
 
 
-// Kc f = d/df^* de sum c |D f|^2, con diferencias adelantadas y c escalon en z.
-// Es el -k2 lap_xy - div_z del original con c en lugar de k2: el enlace z (k, k+1)
-// lleva el coeficiente de la region de k. En los bordes z falta el enlace hacia
-// afuera y no se impone nada.
+//Calcula Sum_j D_j(c D_j f) = d/df^* de sum c |D f|^2 (enlaces adelantados, como en energy_density_functor).
+//En z cada enlace (k, k+1) lleva el c de la region de k. En los bordes la derivada ya es descentrada:
+//en k=0 solo existe el enlace hacia k=1 (diferencia hacia adelante) y en k=Nz-1 solo el que viene
+//de k=Nz-2 (diferencia hacia atras); el enlace hacia afuera no existe y no se lee fuera de la red.
 __device__ cd Kc(const cd* f, const double* c, int i, int j, int k) {
     int r = region(k);
     cd f0 = f[didx(i,j,k)];
-
     Vecinos n(f, i, j, k);
+
     cd lap_xy = (n.xp + n.xm + n.yp + n.ym - 4.0 * f0) / (d_dx * d_dx);
 
     cd div_z = 0.0;
     if (k < d_Nz - 1) div_z += c[r] * (f[didx(i,j,k+1)] - f0);
-    if (k > 0)        div_z -= c[region(k - 1)] * (f0 - f[didx(i,j,k-1)]);
+    if (k > 0)        div_z -= c[region(k-1)] * (f0 - f[didx(i,j,k-1)]);
 
     return -c[r] * lap_xy - div_z / (d_dx * d_dx);
 }
@@ -139,14 +144,15 @@ void compute_phi(const cd* psi){
         thrust::device_pointer_cast(phi_buf),
         [psi] __device__ (int id){
             int i = id % d_Nx, j = (id / d_Nx) % d_Ny, k = id / (d_Nx * d_Ny);
-            return D2(psi, i, j, k);   // [CAMBIO 1] sin argumento adj
+            return D2(psi, i, j, k, false);
         });
 }
 
 // chi = k6 D^4 psi - k4 D^2 psi - k3 By/2 Dx psi en chi_buf, con los coeficientes adentro
-// (k6 por enlace via Kc, k4 y k3 por sitio) para que D2(chi) tome el de cada lado en la interfaz
+// (k6 por enlace via Kc, k4 y k3 por sitio) para que (D^2)^+ chi tome el de cada lado en la interfaz
+
 void compute_chi(const cd* psi){
-    const cd* phi = phi_buf;   // copia local: la lambda de device no puede leer el global de host
+    const cd* phi = phi_buf;                                        // copia local: la lambda de device no puede leer el global de host
     thrust::transform(thrust::device,
         thrust::counting_iterator<int>(0), thrust::counting_iterator<int>(Nx * Ny * Nz),
         thrust::device_pointer_cast(chi_buf),
@@ -158,21 +164,18 @@ void compute_chi(const cd* psi){
 }
 
 // grad = k2 D^2 psi + (|psi|^2 - alfa) psi + k1 By Dx psi + k6 D^6 psi - k4 D^4 psi - k3 By/2 {D^2, Dx} psi
-// con los terminos de orden superior escritos como (D^2)^+ chi - k3 By/2 Dx D^2 psi,
-// donde ahora (D^2)^+ = D^2 [CAMBIO 1]
+// con los terminos de orden superior escritos como (D^2)^+ chi - k3 By/2 Dx D^2 psi
+
 __global__ void kernel_grad(const cd* psi, const cd* phi, const cd* chi, cd* grad){
     int i,j,k;
     if(!site(i,j,k)){
         int r = region(k);
         cd psi0 = psi[didx(i,j,k)];
     
-        cd grad_val = Kc(psi, d_k2, i, j, k) - (d_alfa[r] - thrust::norm(psi0)) * psi0;
-    
-        //Aporte termino lineal Lifshitz
-        grad_val += d_k1[r] * d_By * Dx(psi, i, j, k);
-    
+        cd grad_val = Kc(psi, d_k2, i, j, k) - (d_alfa[r] - thrust::norm(psi0)) * psi0 + d_k1[r] * d_By * Dx(psi, i, j, k);
+
         //Terminos orden superior
-        grad_val += D2(chi, i, j, k) - 0.5 * d_k3[r] * d_By * Dx(phi, i, j, k);   // [CAMBIO 1] adjunto = D2
+        grad_val += D2(chi, i, j, k, true) - 0.5 * d_k3[r] * d_By * Dx(phi, i, j, k);   
     
         grad[didx(i,j,k)] = grad_val;
     }
@@ -201,13 +204,14 @@ struct energy_density_functor {
         Vecinos n(psi, i, j, k);
         Vecinos m(phi, i, j, k);
 
-        //|Dpsi|^2 y |D D^2psi|^2. En z solo el enlace (k, k+1) si existe el plano k+1
+        //|Dpsi|^2 y |D D^2psi|^2 sumados sobre enlaces: el sitio k aporta el enlace (k, k+1).
+        //El enlace (Nz-2, Nz-1) ya lo aporta el sitio Nz-2, asi que k=Nz-1 no suma enlace en z.
         double kin_psi = thrust::norm(n.xp - psi0) + thrust::norm(n.yp - psi0);
         double kin_phi = thrust::norm(m.xp - phi0) + thrust::norm(m.yp - phi0);
         if (k < d_Nz - 1) {
             kin_psi += thrust::norm(psi[didx(i,j,k+1)] - psi0);
             kin_phi += thrust::norm(phi[didx(i,j,k+1)] - phi0);
-        } 
+        }
 
         //Energia potencial
         double psi_sq = thrust::norm(psi0);
@@ -297,12 +301,12 @@ double line_search_wolfe(
     auto ptrial = thrust::device_pointer_cast(trial);
     auto pdir = thrust::device_pointer_cast(dir);
 
-    double alpha_ok = 0.0;   // [CAMBIO 2] ultimo alpha que cumplio Armijo (0 = ninguno)
+    double alpha_ok = 0.0;   //Ultimo alpha que cumplio Armijo (0 = ninguno)
 
     double E0 = compute_energy(psi, Ntot);
     double slope0 = 2*dx*dx*dx*dot(grad, dir, Ntot).real();
 
-    // [CAMBIO 2] Si dir no es de descenso (puede pasar con PR + busqueda inexacta) no hay
+    // Si dir no es de descenso (puede pasar con PR + busqueda inexacta) no hay
     // paso valido: devuelve 0 y el loop principal reinicia con -grad.
     if(!(slope0 < 0.0)) return 0.0;
 
@@ -314,7 +318,7 @@ double line_search_wolfe(
 
         double E = compute_energy(trial, Ntot);
 
-        // [CAMBIO 2] Antes: if(E > E0 + c1*alpha*slope0). Con E = NaN la comparacion es
+        // Antes: if(E > E0 + c1*alpha*slope0). Con E = NaN la comparacion es
         // falsa y el paso se aceptaba. Ahora NaN/inf cuentan como rechazo.
         if(!std::isfinite(E) || !(E <= E0 + c1 * alpha * slope0)) {
             alpha_hi = alpha;
@@ -322,7 +326,7 @@ double line_search_wolfe(
             continue;
         }
 
-        alpha_ok = alpha;   // [CAMBIO 2]
+        alpha_ok = alpha; 
 
         compute_gradient(trial, g_trial);
         double slope = 2*dx*dx*dx*dot(g_trial, dir, Ntot).real();
@@ -337,7 +341,7 @@ double line_search_wolfe(
 
         alpha = 0.5 * (alpha_lo + alpha_hi);
     }
-    // [CAMBIO 2] Antes: return alpha, un valor nunca evaluado (p.ej. 10/2^30) que podia
+    // Antes: return alpha, un valor nunca evaluado (p.ej. 10/2^30) que podia
     // subir la energia. Ahora: el ultimo que cumplio Armijo, o 0 si ninguno.
     return alpha_ok;
 }
@@ -352,23 +356,21 @@ struct polak_ribiere_op {
 
 int main(int argc, char* argv[]) {
 
-    //Quedan chequear bien los parametros de k1 y los de orden superior
-    k1[0] = 1.0; k2[0] = 24.8; alfa[0] = 0.4;
-    k3[0] = 0.3; k4[0] = 0.1; k6[0] = 0.05;
+    k1[0] = 0.0; k2[0] = 24.8; alfa[0] = 0.4;
+    k3[0] = 0.0; k4[0] = 0.25; k6[0] = 0.001;
+
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
-    k3[1] = 0.0; k4[1] = 0.015; k6[1] = 0.0001;
+    k3[1] = 0.0; k4[1] = 0.0; k6[1] = 0.0;
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat kd [sup_order=1]" << std::endl << " Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
+                  << " Nx Ny Nz Nv dx By seed.dat kd [k4=0.25 k6=0.001]" << std::endl 
+                  << " Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
         return 1;
     }
 
-    if(argc == 10 && argv[9][0] == '0'){
-        k1[0] = k3[0] = k4[0] = k6[0] = k1[1] = k3[1] = k4[1] = k6[1] = 0.0;
-        std::cout << "Sin terminos orden superior" << "\n";
-    } 
-    
+    if (argc >= 10) k4[0] = std::stod(argv[9]);
+    if (argc >= 11) k6[0] = std::stod(argv[10]);    
 
     Nx = std::stoi(argv[1]);
     Ny = std::stoi(argv[2]);
@@ -467,7 +469,7 @@ int main(int argc, char* argv[]) {
 
         double norm2 = dot(grad_ptr, grad_ptr, Ntot).real();
 
-        // [CAMBIO 3] corta si el gradiente deja de ser finito, en vez de seguir iterando con NaN
+        //Corta si norm2 es NaN
         if(!std::isfinite(norm2)) {
             std::cerr << "Iter " << k << ": gradiente no finito, se corta.\n";
             break;
@@ -498,13 +500,13 @@ int main(int argc, char* argv[]) {
 
         double alpha = line_search_wolfe(psi_ptr, dir_ptr, grad_ptr, trial_ptr, g_trial_ptr, Ntot);
 
-        // [CAMBIO 3] Si la direccion CG no dio paso valido, reinicia con descenso maximo
+        //Si la direccion CG no dio paso valido, reinicia con descenso maximo
         if(alpha == 0.0 && beta != 0.0) {
             beta = 0.0;
             thrust::transform(d_grad.begin(), d_grad.end(), d_dir.begin(), thrust::negate<cd>());
             alpha = line_search_wolfe(psi_ptr, dir_ptr, grad_ptr, trial_ptr, g_trial_ptr, Ntot);
         }
-        // [CAMBIO 3] Ni -grad baja la energia: estancado (precision o tol muy chica), se corta
+        //Ni -grad baja la energia: estancado (precision o tol muy chica), se corta
         if(alpha == 0.0) {
             std::cerr << "Iter " << k << ": line search sin paso de descenso (|grad|^2 = "
                       << norm2 << "), se corta.\n";
@@ -544,3 +546,4 @@ int main(int argc, char* argv[]) {
 
     return 0;
 }
+

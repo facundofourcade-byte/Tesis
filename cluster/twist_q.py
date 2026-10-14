@@ -1,4 +1,4 @@
-"""f(q) = F[psi0 exp(i q.r)] con q = (qx, qy, 0), usando el mismo F que gl3d_k6_esc.cu.
+"""f(q) = F[psi0 exp(i q.r)] con q = (qx, qy, 0), usando el mismo F que gl3d.cu.
 
 psi0 se reconstruye de density.dat y phase.dat (salida del minimizador). Al multiplicar por
 exp(i q.r) las condiciones de borde ganan el twist extra exp(i qx Lx) en x y exp(i qy Ly) en y.
@@ -6,7 +6,7 @@ Ademas calcula f(z, q): la misma suma restringida a la capa z (el enlace z (k, k
 como en energy_density_functor), y chequea f(q) = sum_z f(z, q).
 
 Uso:  python twist_q.py Nx Ny Nz Nv dx By kd density.dat phase.dat
-                        [--k4 K4_0 K4_1] [--k6 K6_0 K6_1] [--sup 0] [--qmax Q] [--nq N]
+                        [--k4 K4_0 K4_1] [--k6 K6_0 K6_1] [--qmax Q] [--nq N]
 Test: python twist_q.py --test
 """
 import argparse
@@ -19,9 +19,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# (region 0: k < kd, region 1: k >= kd). k4 y k6 se pueden cambiar con --k4 / --k6
-COEF = dict(k1=(1.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
-            k3=(0.3, 0.0), k4=(0.015, 0.0), k6=(0.0001, 0.0))
+# (region 0: k < kd, region 1: k >= kd). Los mismos que main() de gl3d.cu;
+# k4 y k6 se pueden cambiar con --k4 / --k6 (el binario los recibe en argv[9], argv[10])
+COEF = dict(k1=(0.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
+            k3=(0.0, 0.0), k4=(0.25, 0.0), k6=(0.001, 0.0))
 
 
 def vecinos(f, dx, Bz, By, tx, ty):
@@ -50,9 +51,9 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.empty_like(psi)                           # d_z^2: centrada, Neumann en los bordes
+    lz = cp.empty_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
     lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-    lz[0], lz[-1] = psi[1] - psi[0], psi[-2] - psi[-1]
+    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
     phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
@@ -92,22 +93,18 @@ def selftest():
     print("selftest ok")
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser()
     for name, t in [("Nx", int), ("Ny", int), ("Nz", int), ("Nv", int),
                     ("dx", float), ("By", float), ("kd", int), ("density", str), ("phase", str)]:
         p.add_argument(name, type=t)
     p.add_argument("--k4", type=float, nargs=2, default=COEF["k4"], help="k4 en region 0 y 1")
     p.add_argument("--k6", type=float, nargs=2, default=COEF["k6"], help="k6 en region 0 y 1")
-    p.add_argument("--sup", type=int, default=1, help="0: sin terminos de orden superior (como sup_order)")
     p.add_argument("--qmax", type=float, default=0.5)
     p.add_argument("--nq", type=int, default=101)
-    a = p.parse_args()
+    a = p.parse_args(argv)
 
     coef = dict(COEF, k4=tuple(a.k4), k6=tuple(a.k6))
-    if a.sup == 0:                                    # como sup_order=0: ambas regiones
-        for k in ("k1", "k3", "k4", "k6"):
-            coef[k] = (0.0, 0.0)
 
     Lx, Ly = a.Nx * a.dx, a.Ny * a.dx
     Bz = 2 * np.pi * a.Nv / (Lx * Ly)
