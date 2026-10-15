@@ -372,13 +372,16 @@ int main(int argc, char* argv[]) {
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat kd [k4=0.25 k6=0.001]" << std::endl 
+                  << " Nx Ny Nz Nv dx By seed.dat kd [k1 k3 k4 k6]  (region 0; por defecto 0 0 0.25 0.001)" << std::endl 
                   << " Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
         return 1;
     }
 
-    if (argc >= 10) k4[0] = std::stod(argv[9]);
-    if (argc >= 11) k6[0] = std::stod(argv[10]);    
+    //Opcionales despues de kd: k1 k3 k4 k6 de la region 0
+    if (argc >= 10) k1[0] = std::stod(argv[9]);
+    if (argc >= 11) k3[0] = std::stod(argv[10]);
+    if (argc >= 12) k4[0] = std::stod(argv[11]);
+    if (argc >= 13) k6[0] = std::stod(argv[12]);
 
     Nx = std::stoi(argv[1]);
     Ny = std::stoi(argv[2]);
@@ -405,12 +408,13 @@ int main(int argc, char* argv[]) {
               << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
               << " By(en plano)=" << By
               << " d=" << kd * dx << " (kd=" << kd << ")"
+              << std::setprecision(10)   //cluster.py lee los coeficientes de esta linea
               << " k1=(" << k1[0] << "," << k1[1] << ")"
               << " k2=(" << k2[0] << "," << k2[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " k3=(" << k3[0] << "," << k3[1] << ")"
               << " k4=(" << k4[0] << "," << k4[1] << ")"
-              << " k6=(" << k6[0] << "," << k6[1] << ")\n";
+              << " k6=(" << k6[0] << "," << k6[1] << ")\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));

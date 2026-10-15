@@ -6,7 +6,9 @@ Ademas calcula f(z, q): la misma suma restringida a la capa z (el enlace z (k, k
 como en energy_density_functor), y chequea f(q) = sum_z f(z, q).
 
 Uso:  python twist_q.py Nx Ny Nz Nv dx By kd density.dat phase.dat
-                        [--k4 K4_0 K4_1] [--k6 K6_0 K6_1] [--qmax Q] [--nq N]
+                        [--k1 A B] [--k2 A B] [--alfa A B] [--k3 A B] [--k4 A B] [--k6 A B]
+                        [--qmax Q] [--nq N]
+      (A, B: valor en la region 0 y en la region 1; cluster.py los pasa todos, leidos del binario)
 Test: python twist_q.py --test
 """
 import argparse
@@ -19,8 +21,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# (region 0: k < kd, region 1: k >= kd). Los mismos que main() de gl3d.cu;
-# k4 y k6 se pueden cambiar con --k4 / --k6 (el binario los recibe en argv[9], argv[10])
+# (region 0: k < kd, region 1: k >= kd). Valores por defecto de main() de gl3d.cu, solo para
+# correr este script a mano y para el selftest: cluster.py pasa los que uso el binario.
 COEF = dict(k1=(0.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
             k3=(0.0, 0.0), k4=(0.25, 0.0), k6=(0.001, 0.0))
 
@@ -98,13 +100,13 @@ def main(argv=None):
     for name, t in [("Nx", int), ("Ny", int), ("Nz", int), ("Nv", int),
                     ("dx", float), ("By", float), ("kd", int), ("density", str), ("phase", str)]:
         p.add_argument(name, type=t)
-    p.add_argument("--k4", type=float, nargs=2, default=COEF["k4"], help="k4 en region 0 y 1")
-    p.add_argument("--k6", type=float, nargs=2, default=COEF["k6"], help="k6 en region 0 y 1")
+    for k in COEF:
+        p.add_argument(f"--{k}", type=float, nargs=2, default=COEF[k], help=f"{k} en region 0 y 1")
     p.add_argument("--qmax", type=float, default=0.5)
     p.add_argument("--nq", type=int, default=101)
     a = p.parse_args(argv)
 
-    coef = dict(COEF, k4=tuple(a.k4), k6=tuple(a.k6))
+    coef = {k: tuple(getattr(a, k)) for k in COEF}
 
     Lx, Ly = a.Nx * a.dx, a.Ny * a.dx
     Bz = 2 * np.pi * a.Nv / (Lx * Ly)
