@@ -53,9 +53,10 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.empty_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
-    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
+    lz = cp.zeros_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
+    if psi.shape[0] >= 3:                             # con una sola capa no hay d_z^2
+        lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
+        lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
     phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
@@ -79,6 +80,16 @@ def f_q(psi0, qx, qy, dx, Bz, By, kd, coef=COEF):
     return energia(psi0 * cp.exp(1j * r_q), dx, Bz, By, kd, coef, qx * Nx * dx, qy * Ny * dx)
 
 
+def stiffness(psi0, dx, Bz, By, kd, coef=COEF, qfit=0.02, nfit=9):
+    """Dxx, Dyy, Dxy de f(q) ~ f(0) + (V/2) q.D.q cerca de q = 0: parabola en t in [-qfit, qfit] sobre
+    f(t,0), f(0,t), f(t,t) = k+ t^2 y f(t,-t) = k- t^2; Dxx = 2/V a_x, Dyy = 2/V a_y, Dxy = (k+ - k-)/(2V)."""
+    V = psi0.size * dx ** 3
+    t = np.linspace(-qfit, qfit, nfit)
+    a = [np.polyfit(t, [f_q(psi0, ux * ti, uy * ti, dx, Bz, By, kd, coef)[0] for ti in t], 2)[0]
+         for ux, uy in [(1, 0), (0, 1), (1, 1), (1, -1)]]
+    return 2 * a[0] / V, 2 * a[1] / V, (a[2] - a[3]) / (2 * V)
+
+
 def selftest():
     # onda plana sin campo: f = dx^3 Nx Ny sum_k a^2 (k2 l - k4 l^2 + k6 l^3 + a^2/2 - alfa),
     # l = 2(1 - cos(q dx))/dx^2. Sin el twist de borde el enlace i = Nx-1 rompe la igualdad.
@@ -92,6 +103,11 @@ def selftest():
         got, capas = f_q(psi0, qx, qy, dx, 0.0, 0.0, kd)
         assert abs(got - esperado) < 1e-10 * abs(esperado), (qx, qy, got, esperado)
         assert np.allclose(capas, [dx ** 3 * Nx * Ny * e[k >= kd] for k in range(Nz)], rtol=1e-10)
+
+    # psi = 1, una capa, densidad |D psi|^2 - |psi|^2 + |psi|^4/2: f = V (q^2 - 1/2) -> Dxx = Dyy = 2, Dxy = 0
+    std = dict(COEF, k1=(0.0, 0.0), k2=(1.0, 1.0), alfa=(1.0, 1.0), k3=(0.0, 0.0), k4=(0.0, 0.0), k6=(0.0, 0.0))
+    D = stiffness(cp.ones((1, Ny, Nx), complex), dx, 0.0, 0.0, 1, std)
+    assert np.allclose(D, (2, 2, 0), atol=1e-4), D
     print("selftest ok")
 
 
@@ -125,6 +141,7 @@ def main(argv=None):
         err = np.abs(f - fz.sum(axis=1)).max()
         assert err <= 1e-10 * np.abs(f).max(), f"f(q) != sum_z f(z,q), error {err}"
     print(f"f(0) = {f_q(psi0, 0.0, 0.0, a.dx, Bz, a.By, a.kd, coef)[0]:.14g}  (f(q) = sum_z f(z,q) ok)")
+    print("Dxx = %.10g  Dyy = %.10g  Dxy = %.10g" % stiffness(psi0, a.dx, Bz, a.By, a.kd, coef))
     np.savetxt("f_q.dat", np.column_stack([q, fx, fy]), header="q  f(q,0,0)  f(0,q,0)")
     np.savetxt("f_z_qx.dat", np.column_stack([q, fzx]), header="qx  f(z=0,qx)  f(z=1,qx) ...  (qy=0)")
     np.savetxt("f_z_qy.dat", np.column_stack([q, fzy]), header="qy  f(z=0,qy)  f(z=1,qy) ...  (qx=0)")
