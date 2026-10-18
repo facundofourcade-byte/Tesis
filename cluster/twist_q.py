@@ -53,10 +53,9 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.zeros_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
-    if psi.shape[0] >= 3:                             # con una sola capa no hay d_z^2
-        lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-        lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
+    lz = cp.empty_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
+    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
+    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
     phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
@@ -104,9 +103,10 @@ def selftest():
         assert abs(got - esperado) < 1e-10 * abs(esperado), (qx, qy, got, esperado)
         assert np.allclose(capas, [dx ** 3 * Nx * Ny * e[k >= kd] for k in range(Nz)], rtol=1e-10)
 
-    # psi = 1, una capa, densidad |D psi|^2 - |psi|^2 + |psi|^4/2: f = V (q^2 - 1/2) -> Dxx = Dyy = 2, Dxy = 0
+    # psi = 1, una sola region (mismos coeficientes en las dos, sin salto en kd), densidad
+    # |D psi|^2 - |psi|^2 + |psi|^4/2: f = V (q^2 - 1/2) -> Dxx = Dyy = 2, Dxy = 0
     std = dict(COEF, k1=(0.0, 0.0), k2=(1.0, 1.0), alfa=(1.0, 1.0), k3=(0.0, 0.0), k4=(0.0, 0.0), k6=(0.0, 0.0))
-    D = stiffness(cp.ones((1, Ny, Nx), complex), dx, 0.0, 0.0, 1, std)
+    D = stiffness(cp.ones((Nz, Ny, Nx), complex), dx, 0.0, 0.0, kd, std)
     assert np.allclose(D, (2, 2, 0), atol=1e-4), D
     print("selftest ok")
 
