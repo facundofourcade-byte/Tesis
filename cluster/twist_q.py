@@ -45,6 +45,14 @@ def vecinos(f, dx, Bz, By, tx, ty):
     return xp, xm, yp, ym
 
 
+def laplaciano(psi, n, dx):
+    """phi = D^2 psi = -lap psi (n = vecinos(psi)), con d_z^2 como D2 del .cu: centrada, descentrada en los bordes."""
+    lz = cp.empty_like(psi)
+    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
+    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
+    return -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
+
+
 def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     """F[psi] de compute_energy del .cu y su aporte por capa z. psi con forma (Nz, Ny, Nx).
     Devuelve (F total, array de Nz con F de cada capa)."""
@@ -53,10 +61,7 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.empty_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
-    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
-    phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
+    phi = laplaciano(psi, n, dx)
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
     kin_psi = abs2(n[0] - psi) + abs2(n[2] - psi)
@@ -71,6 +76,26 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
          + c["k6"] * kin_phi / dx ** 2 - c["k4"] * abs2(phi)
          - c["k3"] * By * (Dxpsi.conj() * phi).real)
     return float(e.sum()) * dx ** 3, cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 3
+
+
+def corriente(psi, dx, Bz, By, kd, coef=COEF):
+    """(jx, jy) de J = -dF/dA para k1 = k3 = 0, discretizada como F en energia():
+    J = 2 k2 Re(psi* D psi) + 2 k6 Re(phi* D phi) + 2 Re(Q* D psi + psi* D Q),  phi = D^2 psi,
+    Q = dF/dphi* = sum_j D_j(k6 D_j phi) - k4 phi.  Con D centrada, sum_xy J dx^3 = df/dq exacto."""
+    if any(v != 0 for k in ("k1", "k3") for v in coef[k]):
+        raise ValueError(f"corriente() requiere k1 = k3 = 0 (k1={coef['k1']}, k3={coef['k3']})")
+    reg0 = cp.arange(psi.shape[0])[:, None, None] < kd
+    k2, k4, k6 = (cp.where(reg0, *coef[k]) for k in ("k2", "k4", "k6"))
+    n = vecinos(psi, dx, Bz, By, 0.0, 0.0)
+    phi = laplaciano(psi, n, dx)
+    m = vecinos(phi, dx, Bz, By, 0.0, 0.0)
+    Q = k6 * (4 * phi - sum(m)) / dx ** 2 - k4 * phi   # el enlace z (k, k+1) lleva k6 de la capa k
+    dz = k6[:-1] * (phi[1:] - phi[:-1]) / dx ** 2
+    Q[:-1] -= dz
+    Q[1:] += dz
+    D = lambda v: (-1j * (v[0] - v[1]) / (2 * dx), -1j * (v[2] - v[3]) / (2 * dx))
+    return tuple(2 * (k2 * psi.conj() * a + k6 * phi.conj() * b + Q.conj() * a + psi.conj() * c).real
+                 for a, b, c in zip(D(n), D(m), D(vecinos(Q, dx, Bz, By, 0.0, 0.0))))
 
 
 def f_q(psi0, qx, qy, dx, Bz, By, kd, coef=COEF):
@@ -108,6 +133,14 @@ def selftest():
     std = dict(COEF, k1=(0.0, 0.0), k2=(1.0, 1.0), alfa=(1.0, 1.0), k3=(0.0, 0.0), k4=(0.0, 0.0), k6=(0.0, 0.0))
     D = stiffness(cp.ones((Nz, Ny, Nx), complex), dx, 0.0, 0.0, kd, std)
     assert np.allclose(D, (2, 2, 0), atol=1e-4), D
+
+    # psi aleatoria con campo y salto en kd (COEF tiene k1 = k3 = 0): sum_xy J dx^3 = df/dq en q = 0
+    rng = np.random.default_rng(0)
+    psi = cp.asarray(rng.normal(size=(Nz, Ny, Nx)) + 1j * rng.normal(size=(Nz, Ny, Nx)))
+    Bz, By, h = 2 * np.pi / (Nx * Ny * dx ** 2), 0.3, 1e-5
+    for j, (ux, uy) in zip(corriente(psi, dx, Bz, By, kd), [(1, 0), (0, 1)]):
+        dfdq = (f_q(psi, ux * h, uy * h, dx, Bz, By, kd)[0] - f_q(psi, -ux * h, -uy * h, dx, Bz, By, kd)[0]) / (2 * h)
+        assert abs(float(j.sum()) * dx ** 3 - dfdq) < 1e-6 * abs(dfdq), (float(j.sum()) * dx ** 3, dfdq)
     print("selftest ok")
 
 
@@ -167,6 +200,10 @@ def main(argv=None):
     ax[-1, 1].set_xlabel("$q_y$  ($q_x=0$)")
     fig.tight_layout()
     fig.savefig("f_z_q.png", dpi=120)
+
+    jx, jy = corriente(psi0, a.dx, Bz, a.By, a.kd, coef)
+    for z, (sx, sy) in enumerate(zip(cp.asnumpy(jx.sum(axis=(1, 2))), cp.asnumpy(jy.sum(axis=(1, 2))))):
+        print(f"capa k={z}: sum jx = {sx:.10g}  sum jy = {sy:.10g}")
 
 
 if __name__ == "__main__":
