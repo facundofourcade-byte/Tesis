@@ -294,8 +294,13 @@ double line_search_wolfe(
 {
     double c1 = 1e-4;
     double c2 = 0.1;
-    double alpha = 1.0;
+    // Arranca de 2x el paso aceptado en la llamada anterior (la primera vez, 1.0) en vez de
+    // 1.0 siempre: con dx chico el paso aceptado es ~1e-7 y arrancar de 1 costaba ~23
+    // evaluaciones de energia por iteracion solo en achicar alpha.
+    static double alpha_prev = 0.5;
+    double alpha = std::min(2.0 * alpha_prev, 10.0);
     double alpha_lo = 0.0, alpha_hi = 10.0;
+    bool acotado = false;    //true cuando alpha_hi ya es un paso evaluado (intervalo cerrado)
 
     auto ppsi = thrust::device_pointer_cast(psi);
     auto ptrial = thrust::device_pointer_cast(trial);
@@ -321,7 +326,7 @@ double line_search_wolfe(
         // Antes: if(E > E0 + c1*alpha*slope0). Con E = NaN la comparacion es
         // falsa y el paso se aceptaba. Ahora NaN/inf cuentan como rechazo.
         if(!std::isfinite(E) || !(E <= E0 + c1 * alpha * slope0)) {
-            alpha_hi = alpha;
+            alpha_hi = alpha; acotado = true;
             alpha = 0.5 * (alpha_lo + alpha_hi);
             continue;
         }
@@ -332,17 +337,20 @@ double line_search_wolfe(
         double slope = 2*dx*dx*dx*dot(g_trial, dir, Ntot).real();
 
         if(std::abs(slope) <= c2 * std::abs(slope0))
-            return alpha;
+            return alpha_prev = alpha;
 
-        if(slope >= 0)
-            alpha_hi = alpha;
-        else
+        if(slope >= 0) {
+            alpha_hi = alpha; acotado = true;
+        } else
             alpha_lo = alpha;
 
-        alpha = 0.5 * (alpha_lo + alpha_hi);
+        // Sin cota superior evaluada se agranda duplicando (antes: biseccion hacia 10, que
+        // desde alpha ~1e-7 saltaba a ~5 y despues tenia que volver a achicar)
+        alpha = acotado ? 0.5 * (alpha_lo + alpha_hi) : std::min(2.0 * alpha, alpha_hi);
     }
     // Antes: return alpha, un valor nunca evaluado (p.ej. 10/2^30) que podia
     // subir la energia. Ahora: el ultimo que cumplio Armijo, o 0 si ninguno.
+    if(alpha_ok > 0.0) alpha_prev = alpha_ok;
     return alpha_ok;
 }
 
@@ -356,21 +364,24 @@ struct polak_ribiere_op {
 
 int main(int argc, char* argv[]) {
 
-    k1[0] = 0.0; k2[0] = 24.8; alfa[0] = 0.4;
-    k3[0] = 0.0; k4[0] = 0.25; k6[0] = 0.001;
+    k1[0] = 0.0; k2[0] = 24.8; alfa[0] = 0.2;
+    k3[0] = 0.0; k4[0] = 0.1; k6[0] = 0.001;
 
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
     k3[1] = 0.0; k4[1] = 0.0; k6[1] = 0.0;
 
     if (argc < 9 || std::stoi(argv[3]) < 4 || std::stoi(argv[8]) < 0 || std::stoi(argv[8]) >= std::stoi(argv[3])) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny Nz Nv dx By seed.dat kd [k4=0.25 k6=0.001]" << std::endl 
+                  << " Nx Ny Nz Nv dx By seed.dat kd [k1 k3 k4 k6]  (region 0; por defecto 0 0 0.25 0.001)" << std::endl 
                   << " Nz >= 4, kd entre 0 y Nz. Nz >= 4." << std::endl;
         return 1;
     }
 
-    if (argc >= 10) k4[0] = std::stod(argv[9]);
-    if (argc >= 11) k6[0] = std::stod(argv[10]);    
+    //Opcionales despues de kd: k1 k3 k4 k6 de la region 0
+    if (argc >= 10) k1[0] = std::stod(argv[9]);
+    if (argc >= 11) k3[0] = std::stod(argv[10]);
+    if (argc >= 12) k4[0] = std::stod(argv[11]);
+    if (argc >= 13) k6[0] = std::stod(argv[12]);
 
     Nx = std::stoi(argv[1]);
     Ny = std::stoi(argv[2]);
@@ -397,12 +408,13 @@ int main(int argc, char* argv[]) {
               << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
               << " By(en plano)=" << By
               << " d=" << kd * dx << " (kd=" << kd << ")"
+              << std::setprecision(10)   //cluster.py lee los coeficientes de esta linea
               << " k1=(" << k1[0] << "," << k1[1] << ")"
               << " k2=(" << k2[0] << "," << k2[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " k3=(" << k3[0] << "," << k3[1] << ")"
               << " k4=(" << k4[0] << "," << k4[1] << ")"
-              << " k6=(" << k6[0] << "," << k6[1] << ")\n";
+              << " k6=(" << k6[0] << "," << k6[1] << ")\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));

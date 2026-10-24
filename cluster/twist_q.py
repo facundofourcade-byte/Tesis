@@ -6,7 +6,9 @@ Ademas calcula f(z, q): la misma suma restringida a la capa z (el enlace z (k, k
 como en energy_density_functor), y chequea f(q) = sum_z f(z, q).
 
 Uso:  python twist_q.py Nx Ny Nz Nv dx By kd density.dat phase.dat
-                        [--k4 K4_0 K4_1] [--k6 K6_0 K6_1] [--qmax Q] [--nq N]
+                        [--k1 A B] [--k2 A B] [--alfa A B] [--k3 A B] [--k4 A B] [--k6 A B]
+                        [--qmax Q] [--nq N]
+      (A, B: valor en la region 0 y en la region 1; cluster.py los pasa todos, leidos del binario)
 Test: python twist_q.py --test
 """
 import argparse
@@ -19,8 +21,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-# (region 0: k < kd, region 1: k >= kd). Los mismos que main() de gl3d.cu;
-# k4 y k6 se pueden cambiar con --k4 / --k6 (el binario los recibe en argv[9], argv[10])
+# (region 0: k < kd, region 1: k >= kd). Valores por defecto de main() de gl3d.cu, solo para
+# correr este script a mano y para el selftest: cluster.py pasa los que uso el binario.
 COEF = dict(k1=(0.0, 0.0), k2=(24.8, 1.0), alfa=(0.4, 1.0),
             k3=(0.0, 0.0), k4=(0.25, 0.0), k6=(0.001, 0.0))
 
@@ -43,6 +45,14 @@ def vecinos(f, dx, Bz, By, tx, ty):
     return xp, xm, yp, ym
 
 
+def laplaciano(psi, n, dx):
+    """phi = D^2 psi = -lap psi (n = vecinos(psi)), con d_z^2 como D2 del .cu: centrada, descentrada en los bordes."""
+    lz = cp.empty_like(psi)
+    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
+    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
+    return -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
+
+
 def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     """F[psi] de compute_energy del .cu y su aporte por capa z. psi con forma (Nz, Ny, Nx).
     Devuelve (F total, array de Nz con F de cada capa)."""
@@ -51,10 +61,7 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     c = {k: cp.where(reg0, *v) for k, v in coef.items()}
 
     n = vecinos(psi, dx, Bz, By, tx, ty)
-    lz = cp.empty_like(psi)                           # d_z^2 como D2 del .cu: centrada, descentrada en los bordes
-    lz[1:-1] = psi[2:] - 2 * psi[1:-1] + psi[:-2]
-    lz[0], lz[-1] = psi[0] - 2 * psi[1] + psi[2], psi[-1] - 2 * psi[-2] + psi[-3]
-    phi = -(n[0] + n[1] + n[2] + n[3] - 4 * psi + lz) / dx ** 2
+    phi = laplaciano(psi, n, dx)
     m = vecinos(phi, dx, Bz, By, tx, ty)
 
     kin_psi = abs2(n[0] - psi) + abs2(n[2] - psi)
@@ -71,10 +78,40 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
     return float(e.sum()) * dx ** 3, cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 3
 
 
+def corriente(psi, dx, Bz, By, kd, coef=COEF):
+    """(jx, jy) de J = -dF/dA para k1 = k3 = 0, discretizada como F en energia():
+    J = 2 k2 Re(psi* D psi) + 2 k6 Re(phi* D phi) + 2 Re(Q* D psi + psi* D Q),  phi = D^2 psi,
+    Q = dF/dphi* = sum_j D_j(k6 D_j phi) - k4 phi.  Con D centrada, sum_xy J dx^3 = df/dq exacto."""
+    if any(v != 0 for k in ("k1", "k3") for v in coef[k]):
+        raise ValueError(f"corriente() requiere k1 = k3 = 0 (k1={coef['k1']}, k3={coef['k3']})")
+    reg0 = cp.arange(psi.shape[0])[:, None, None] < kd
+    k2, k4, k6 = (cp.where(reg0, *coef[k]) for k in ("k2", "k4", "k6"))
+    n = vecinos(psi, dx, Bz, By, 0.0, 0.0)
+    phi = laplaciano(psi, n, dx)
+    m = vecinos(phi, dx, Bz, By, 0.0, 0.0)
+    Q = k6 * (4 * phi - sum(m)) / dx ** 2 - k4 * phi   # el enlace z (k, k+1) lleva k6 de la capa k
+    dz = k6[:-1] * (phi[1:] - phi[:-1]) / dx ** 2
+    Q[:-1] -= dz
+    Q[1:] += dz
+    D = lambda v: (-1j * (v[0] - v[1]) / (2 * dx), -1j * (v[2] - v[3]) / (2 * dx))
+    return tuple(2 * (k2 * psi.conj() * a + k6 * phi.conj() * b + Q.conj() * a + psi.conj() * c).real
+                 for a, b, c in zip(D(n), D(m), D(vecinos(Q, dx, Bz, By, 0.0, 0.0))))
+
+
 def f_q(psi0, qx, qy, dx, Bz, By, kd, coef=COEF):
     Nz, Ny, Nx = psi0.shape
     r_q = qx * cp.arange(Nx) * dx + qy * cp.arange(Ny)[:, None] * dx
     return energia(psi0 * cp.exp(1j * r_q), dx, Bz, By, kd, coef, qx * Nx * dx, qy * Ny * dx)
+
+
+def stiffness(psi0, dx, Bz, By, kd, coef=COEF, qfit=0.02, nfit=9):
+    """Dxx, Dyy, Dxy de f(q) ~ f(0) + (V/2) q.D.q cerca de q = 0: parabola en t in [-qfit, qfit] sobre
+    f(t,0), f(0,t), f(t,t) = k+ t^2 y f(t,-t) = k- t^2; Dxx = 2/V a_x, Dyy = 2/V a_y, Dxy = (k+ - k-)/(2V)."""
+    V = psi0.size * dx ** 3
+    t = np.linspace(-qfit, qfit, nfit)
+    a = [np.polyfit(t, [f_q(psi0, ux * ti, uy * ti, dx, Bz, By, kd, coef)[0] for ti in t], 2)[0]
+         for ux, uy in [(1, 0), (0, 1), (1, 1), (1, -1)]]
+    return 2 * a[0] / V, 2 * a[1] / V, (a[2] - a[3]) / (2 * V)
 
 
 def selftest():
@@ -90,6 +127,20 @@ def selftest():
         got, capas = f_q(psi0, qx, qy, dx, 0.0, 0.0, kd)
         assert abs(got - esperado) < 1e-10 * abs(esperado), (qx, qy, got, esperado)
         assert np.allclose(capas, [dx ** 3 * Nx * Ny * e[k >= kd] for k in range(Nz)], rtol=1e-10)
+
+    # psi = 1, una sola region (mismos coeficientes en las dos, sin salto en kd), densidad
+    # |D psi|^2 - |psi|^2 + |psi|^4/2: f = V (q^2 - 1/2) -> Dxx = Dyy = 2, Dxy = 0
+    std = dict(COEF, k1=(0.0, 0.0), k2=(1.0, 1.0), alfa=(1.0, 1.0), k3=(0.0, 0.0), k4=(0.0, 0.0), k6=(0.0, 0.0))
+    D = stiffness(cp.ones((Nz, Ny, Nx), complex), dx, 0.0, 0.0, kd, std)
+    assert np.allclose(D, (2, 2, 0), atol=1e-4), D
+
+    # psi aleatoria con campo y salto en kd (COEF tiene k1 = k3 = 0): sum_xy J dx^3 = df/dq en q = 0
+    rng = np.random.default_rng(0)
+    psi = cp.asarray(rng.normal(size=(Nz, Ny, Nx)) + 1j * rng.normal(size=(Nz, Ny, Nx)))
+    Bz, By, h = 2 * np.pi / (Nx * Ny * dx ** 2), 0.3, 1e-5
+    for j, (ux, uy) in zip(corriente(psi, dx, Bz, By, kd), [(1, 0), (0, 1)]):
+        dfdq = (f_q(psi, ux * h, uy * h, dx, Bz, By, kd)[0] - f_q(psi, -ux * h, -uy * h, dx, Bz, By, kd)[0]) / (2 * h)
+        assert abs(float(j.sum()) * dx ** 3 - dfdq) < 1e-6 * abs(dfdq), (float(j.sum()) * dx ** 3, dfdq)
     print("selftest ok")
 
 
@@ -98,13 +149,13 @@ def main(argv=None):
     for name, t in [("Nx", int), ("Ny", int), ("Nz", int), ("Nv", int),
                     ("dx", float), ("By", float), ("kd", int), ("density", str), ("phase", str)]:
         p.add_argument(name, type=t)
-    p.add_argument("--k4", type=float, nargs=2, default=COEF["k4"], help="k4 en region 0 y 1")
-    p.add_argument("--k6", type=float, nargs=2, default=COEF["k6"], help="k6 en region 0 y 1")
+    for k in COEF:
+        p.add_argument(f"--{k}", type=float, nargs=2, default=COEF[k], help=f"{k} en region 0 y 1")
     p.add_argument("--qmax", type=float, default=0.5)
     p.add_argument("--nq", type=int, default=101)
     a = p.parse_args(argv)
 
-    coef = dict(COEF, k4=tuple(a.k4), k6=tuple(a.k6))
+    coef = {k: tuple(getattr(a, k)) for k in COEF}
 
     Lx, Ly = a.Nx * a.dx, a.Ny * a.dx
     Bz = 2 * np.pi * a.Nv / (Lx * Ly)
@@ -123,6 +174,7 @@ def main(argv=None):
         err = np.abs(f - fz.sum(axis=1)).max()
         assert err <= 1e-10 * np.abs(f).max(), f"f(q) != sum_z f(z,q), error {err}"
     print(f"f(0) = {f_q(psi0, 0.0, 0.0, a.dx, Bz, a.By, a.kd, coef)[0]:.14g}  (f(q) = sum_z f(z,q) ok)")
+    print("Dxx = %.10g  Dyy = %.10g  Dxy = %.10g" % stiffness(psi0, a.dx, Bz, a.By, a.kd, coef))
     np.savetxt("f_q.dat", np.column_stack([q, fx, fy]), header="q  f(q,0,0)  f(0,q,0)")
     np.savetxt("f_z_qx.dat", np.column_stack([q, fzx]), header="qx  f(z=0,qx)  f(z=1,qx) ...  (qy=0)")
     np.savetxt("f_z_qy.dat", np.column_stack([q, fzy]), header="qy  f(z=0,qy)  f(z=1,qy) ...  (qx=0)")
@@ -148,6 +200,10 @@ def main(argv=None):
     ax[-1, 1].set_xlabel("$q_y$  ($q_x=0$)")
     fig.tight_layout()
     fig.savefig("f_z_q.png", dpi=120)
+
+    jx, jy = corriente(psi0, a.dx, Bz, a.By, a.kd, coef)
+    for z, (sx, sy) in enumerate(zip(cp.asnumpy(jx.sum(axis=(1, 2))), cp.asnumpy(jy.sum(axis=(1, 2))))):
+        print(f"capa k={z}: sum jx = {sx:.10g}  sum jy = {sy:.10g}")
 
 
 if __name__ == "__main__":
