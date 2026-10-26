@@ -75,20 +75,32 @@ def energia(psi, dx, Bz, By, kd, coef=COEF, tx=0.0, ty=0.0):
 
 
 def corriente(psi, dx, Bz, By, kd, coef=COEF):
-    """(jx, jy) de J = -dF/dA para k1 = k3 = 0, discretizada como F en energia():
-    J = 2 k2 Re(psi* D psi) + 2 k6 Re(phi* D phi) + 2 Re(Q* D psi + psi* D Q),  phi = H psi,
-    Q = dF/dphi* = k6 H phi - k4 phi.  Con D centrada, sum_xy J dx^3 = df/dq exacto."""
-    if any(v != 0 for k in ("k1", "k3") for v in coef[k]):
-        raise ValueError(f"corriente() requiere k1 = k3 = 0 (k1={coef['k1']}, k3={coef['k3']})")
+    """(jx, jy, jz) de J = -dF/dA (sin la de magnetizacion), discretizada como F en energia(), a = x, y:
+    j_a = 2 k2 Re[psi* Da psi] + k1 By |psi|^2 d_ax - 2 k4 Re[(H psi)* Da psi + psi* Da H psi]
+        + 2 k6 Re[(H psi)* Da H psi + (H^2 psi)* Da psi + psi* Da H^2 psi]
+        - k3 By Re[psi* H psi d_ax + (Dx psi)* Da psi + psi* Da Dx psi]
+    Los terminos k4 y k6 van juntos como 2 k6 Re(phi* Da phi) + 2 Re(Q* Da psi + psi* Da Q), phi = H psi,
+    Q = dF/dphi* = k6 H phi - k4 phi. En los d_ax el psi va promediado en x, Mx psi = (psi(x+dx) + psi(x-dx))/2
+    con los enlaces (-> psi si dx -> 0): es lo que deriva el Dx centrado, y asi sum_xy J dx^3 = df/dq exacto.
+    jz = 2 k2 Re[psi* Dz psi] con Dz adelantada en el enlace (k, k+1) de la capa k, como en energia();
+    Neumann: k = Nz-1 no tiene enlace y jz = 0."""
     reg0 = cp.arange(psi.shape[0])[:, None, None] < kd
-    k2, k4, k6 = (cp.where(reg0, *coef[k]) for k in ("k2", "k4", "k6"))
-    n = vecinos(psi, dx, Bz, By, 0.0, 0.0)
-    phi = H(psi, n, dx)
-    m = vecinos(phi, dx, Bz, By, 0.0, 0.0)
-    Q = k6 * H(phi, m, dx) - k4 * phi
+    k1, k2, k3, k4, k6 = (cp.where(reg0, *coef[k]) for k in ("k1", "k2", "k3", "k4", "k6"))
+    V = lambda f: vecinos(f, dx, Bz, By, 0.0, 0.0)
     D = lambda v: (-1j * (v[0] - v[1]) / (2 * dx), -1j * (v[2] - v[3]) / (2 * dx))
-    return tuple(2 * (k2 * psi.conj() * a + k6 * phi.conj() * b + Q.conj() * a + psi.conj() * c).real
-                 for a, b, c in zip(D(n), D(m), D(vecinos(Q, dx, Bz, By, 0.0, 0.0))))
+    n = V(psi)
+    phi = H(psi, n, dx)
+    m = V(phi)
+    Q = k6 * H(phi, m, dx) - k4 * phi
+    Dpsi = D(n)
+    j = [2 * (k2 * psi.conj() * a + k6 * phi.conj() * b + Q.conj() * a + psi.conj() * c).real
+         - k3 * By * (Dpsi[0].conj() * a + psi.conj() * d).real
+         for a, b, c, d in zip(Dpsi, D(m), D(V(Q)), D(V(Dpsi[0])))]
+    Mx = (n[0] + n[1]) / 2
+    j[0] += By * (k1 * psi.conj() * Mx - k3 * Mx.conj() * phi).real
+    jz = cp.zeros_like(j[0])
+    jz[:-1] = 2 * k2[:-1] * (-1j * psi[:-1].conj() * (psi[1:] - psi[:-1]) / dx).real
+    return j[0], j[1], jz
 
 
 def f_q(psi0, qx, qy, dx, Bz, By, kd, coef=COEF):
@@ -127,12 +139,17 @@ def selftest():
     D = stiffness(cp.ones((Nz, Ny, Nx), complex), dx, 0.0, 0.0, kd, std)
     assert np.allclose(D, (2, 2, 0), atol=1e-4), D
 
-    # psi aleatoria con campo y salto en kd (COEF tiene k1 = k3 = 0): sum_xy J dx^3 = df/dq en q = 0
+    # psi aleatoria con campo, k1 k3 k4 k6 != 0 y salto en kd: sum J dx^3 = df/dq en q = 0.
+    # En z no hay twist (Neumann): f(qz) = F[psi exp(i qz z)]
     rng = np.random.default_rng(0)
     psi = cp.asarray(rng.normal(size=(Nz, Ny, Nx)) + 1j * rng.normal(size=(Nz, Ny, Nx)))
     Bz, By, h = 2 * np.pi / (Nx * Ny * dx ** 2), 0.3, 1e-5
-    for j, (ux, uy) in zip(corriente(psi, dx, Bz, By, kd), [(1, 0), (0, 1)]):
-        dfdq = (f_q(psi, ux * h, uy * h, dx, Bz, By, kd)[0] - f_q(psi, -ux * h, -uy * h, dx, Bz, By, kd)[0]) / (2 * h)
+    c = dict(COEF, k1=(0.3, -0.2), k3=(0.5, 0.1))
+    z = cp.arange(Nz)[:, None, None] * dx
+    fs = [lambda q: f_q(psi, q, 0.0, dx, Bz, By, kd, c)[0], lambda q: f_q(psi, 0.0, q, dx, Bz, By, kd, c)[0],
+          lambda q: energia(psi * cp.exp(1j * q * z), dx, Bz, By, kd, c)[0]]
+    for j, f in zip(corriente(psi, dx, Bz, By, kd, c), fs):
+        dfdq = (f(h) - f(-h)) / (2 * h)
         assert abs(float(j.sum()) * dx ** 3 - dfdq) < 1e-6 * abs(dfdq), (float(j.sum()) * dx ** 3, dfdq)
     print("selftest ok")
 
@@ -194,9 +211,9 @@ def main(argv=None):
     fig.tight_layout()
     fig.savefig("f_z_q.png", dpi=120)
 
-    jx, jy = corriente(psi0, a.dx, Bz, a.By, a.kd, coef)
-    for z, (sx, sy) in enumerate(zip(cp.asnumpy(jx.sum(axis=(1, 2))), cp.asnumpy(jy.sum(axis=(1, 2))))):
-        print(f"capa k={z}: sum jx = {sx:.10g}  sum jy = {sy:.10g}")
+    J = [cp.asnumpy(j.sum(axis=(1, 2))) for j in corriente(psi0, a.dx, Bz, a.By, a.kd, coef)]
+    for z, (sx, sy, sz) in enumerate(zip(*J)):
+        print(f"capa k={z}: sum jx = {sx:.10g}  sum jy = {sy:.10g}  sum jz = {sz:.10g}")
 
 
 if __name__ == "__main__":
