@@ -7,7 +7,11 @@ mismo branch de f(q), que es periodica en qx con periodo 2 pi / Lx). Todo corre 
 density.dat, phase.dat y run_log.dat quedan los de la ultima corrida, seed_q.dat es la semilla de la ultima.
 f(q) total es E_final del binario; f(z, q) por capa sale de energia() sobre la psi minimizada.
 
-Salidas: f_q.dat (q, f(q,0), f(0,q)), f_z_qx.dat, f_z_qy.dat (q, f de cada capa), f_q.png, f_z_q.png.
+Stiffness: parabola a q^2 + b q + c ajustada a f(qx, 0) y a f(0, qy) alrededor de su minimo (NFIT puntos a
+cada lado); Dxx = 2 a / V y Dyy = 2 a / V, V = Nx Ny Nz dx^3. Tambien imprime el q del minimo, -b / (2a).
+
+Salidas: f_q.dat (q, f(q,0), f(0,q)), f_z_qx.dat, f_z_qy.dat (q, f de cada capa), f_q.png (con las
+parabolas), f_z_q.png.
 
 corriente() no se usa en el barrido: queda para analizar una psi a mano (sum J dx^3 = df/dq en el minimo).
 
@@ -39,6 +43,7 @@ K1, K3, K4, K6 = 0.0, 0.0, 0.25, 0.001   # region 0 (argv[11..14] del binario)
 
 # Barrido: q = QMAX * (-NQ..NQ) / NQ en qx (qy = 0) y en qy (qx = 0)
 QMAX, NQ = 0.05, 5
+NFIT = 3                    # stiffness: parabola con NFIT puntos a cada lado del minimo de f(q)
 
 # (region 0: k < kd, region 1: k >= kd). Solo para el selftest: main() usa los que imprime el binario.
 COEF = dict(k1=(0.0, 0.0), k2=(24.8, 1.0), alfa=(0.2, 1.0),
@@ -121,6 +126,16 @@ def corriente(psi, dx, Bz, By, kd, coef, tx=0.0, ty=0.0):
     return j[0], j[1], jz
 
 
+def stiffness(q, f, V, nfit):
+    """Ajusta a q^2 + b q + c a f con nfit puntos a cada lado de su minimo. Devuelve (2 a / V, (a, b, c))."""
+    i0 = int(np.argmin(f))
+    if i0 in (0, len(f) - 1):
+        print(f"AVISO: el minimo de f esta en el borde del barrido (q = {q[i0]:.6g}): agrandar QMAX")
+    m = slice(max(i0 - nfit, 0), i0 + nfit + 1)
+    p = np.polyfit(q[m], f[m], 2)
+    return 2 * p[0] / V, p
+
+
 def minimizar(qx, qy, psi_seed):
     """Corre el binario con twist (qx, qy) desde psi_seed (Nz, Ny, Nx), en el directorio actual.
     Devuelve (E_final, coeficientes {nombre: (region 0, region 1)}, psi minimizada)."""
@@ -160,9 +175,17 @@ def main():
     np.savetxt("f_z_qx.dat", np.column_stack([q, fzx]), header="qx  f(z=0,qx)  f(z=1,qx) ...  (qy=0)")
     np.savetxt("f_z_qy.dat", np.column_stack([q, fzy]), header="qy  f(z=0,qy)  f(z=1,qy) ...  (qx=0)")
 
+    V = Nx * Ny * Nz * dx ** 3
+    (Dxx, px), (Dyy, py) = stiffness(q, fx, V, NFIT), stiffness(q, fy, V, NFIT)
+    print(f"Dxx = {Dxx:.10g}  (minimo en qx = {-px[1] / (2 * px[0]):.6g})")
+    print(f"Dyy = {Dyy:.10g}  (minimo en qy = {-py[1] / (2 * py[0]):.6g})")
+
     fig, ax = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
-    for axi, fi, lab in [(ax[0], fx, "q_x"), (ax[1], fy, "q_y")]:
-        axi.plot(q, fi, "o-", lw=2, color="#2a6fdb")
+    for axi, fi, p, D, lab in [(ax[0], fx, px, Dxx, "q_x"), (ax[1], fy, py, Dyy, "q_y")]:
+        axi.plot(q, fi, "o", color="#2a6fdb")
+        qq = np.linspace(q[0], q[-1], 200)
+        axi.plot(qq, np.polyval(p, qq), lw=1.5, color="#e0542e", label=f"ajuste: $D$ = {D:.6g}")
+        axi.legend(fontsize=8)
         axi.set_xlabel(f"${lab}$")
         axi.set_title(f"$f({lab})$, " + ("$q_y=0$" if lab == "q_x" else "$q_x=0$"))
         axi.grid(alpha=0.3)
@@ -213,6 +236,12 @@ def selftest():
     for j, f in zip(corriente(psi, dx, Bz, By, kd, c, tx, ty), fs):
         dfdq = (f(h) - f(-h)) / (2 * h)
         assert abs(float(j.sum()) * dx ** 3 - dfdq) < 1e-6 * abs(dfdq), (float(j.sum()) * dx ** 3, dfdq)
+
+    # stiffness(): f = 3 + (V/2) D (q - q0)^2 con el minimo corrido de q = 0, y basura (+100) fuera de
+    # los 3 puntos a cada lado del minimo (paso 0.025): si la ventana no se usara, el ajuste daria otra cosa
+    q, V = np.linspace(-0.5, 0.5, 41), 7.0
+    D, p = stiffness(q, 3 + V / 2 * 1.7 * (q - 0.2) ** 2 + 100 * (abs(q - 0.2) > 0.08), V, 3)
+    assert abs(D - 1.7) < 1e-3 and abs(-p[1] / (2 * p[0]) - 0.2) < 1e-6, (D, p)
     print("selftest ok")
 
 
