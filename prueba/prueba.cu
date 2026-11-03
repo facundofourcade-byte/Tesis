@@ -335,7 +335,7 @@ struct polak_ribiere_op {
 
 int main(int argc, char* argv[]) {
 
-    k1[0] = 0.0; k2[0] = 24.8; alfa[0] = 0.2;
+    k1[0] = 0.0; k2[0] = 0.1; alfa[0] = -0.2;
     k3[0] = 0.0; k4[0] = 0.1; k6[0] = 0.001;
 
     k1[1] = 0.0; k2[1] = 1.0; alfa[1] = 1.0;
