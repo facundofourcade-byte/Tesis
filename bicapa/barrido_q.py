@@ -14,7 +14,7 @@ ajustada a G(qx, 0) y a G(0, qy) alrededor de su minimo (NFIT puntos a cada lado
 la capa 2 prefiere qx = -By d, asi que el minimo de G puede no estar en q = 0: se imprime el q del minimo, -b / (2a).
 
 Salidas: G_q.dat (q, G(q,0), G(0,q), G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_q.png (con las parabolas),
-G_capas_q.png (G_1 y G_2 en el mismo grafico, cada una menos su valor en q = 0 para que se vea la curvatura).
+G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y qy).
 
 Los parametros se cambian aca (red, semilla, K1 K2 d J By, barrido en q) y en main() de minimizador.cu (alfa,
 beta). Los alfa, beta (y K) para energia() se leen de la linea que imprime el binario, asi que siempre son los
@@ -146,15 +146,15 @@ def main():
     fig.tight_layout()
     fig.savefig("G_q.png", dpi=150)
 
-    # G_1 y G_2 en el mismo grafico: cada una menos su valor en q = 0 (q[NQ]) para compartir escala
-    fig, ax = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
-    for axi, Gk, lab in [(ax[0], Gkx, "q_x"), (ax[1], Gky, "q_y")]:
-        for k, color in [(0, "#2a6fdb"), (1, "#e0542e")]:
-            axi.plot(q, Gk[:, k] - Gk[NQ, k], "o-", lw=2, color=color, label=f"capa {k + 1}")
-        axi.legend(fontsize=8)
-        axi.set_xlabel(f"${lab}$")
-        axi.set_title(f"$G_k({lab}) - G_k(0)$, " + ("$q_y=0$" if lab == "q_x" else "$q_x=0$"))
-        axi.grid(alpha=0.3)
+    # G_k(q): una fila por capa (cada una con su escala en y), columnas qx y qy
+    fig, ax = plt.subplots(2, 2, figsize=(10, 6), sharex=True)
+    for k, color in [(0, "#2a6fdb"), (1, "#e0542e")]:
+        for col, Gk, lab in [(0, Gkx, "q_x"), (1, Gky, "q_y")]:
+            ax[k, col].plot(q, Gk[:, k], "o-", lw=2, color=color)
+            ax[k, col].set_title(f"capa {k + 1}: $G_{k + 1}({lab})$", fontsize=9)
+            ax[k, col].grid(alpha=0.3)
+    ax[-1, 0].set_xlabel("$q_x$  ($q_y=0$)")
+    ax[-1, 1].set_xlabel("$q_y$  ($q_x=0$)")
     fig.tight_layout()
     fig.savefig("G_capas_q.png", dpi=150)
 
