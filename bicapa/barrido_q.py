@@ -17,8 +17,9 @@ Salidas: G_q.dat (q, G(q,0), G(0,q), G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_
 G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y qy).
 
 Los parametros se cambian aca (red, semilla, K1 K2 d J By, barrido en q) y en main() de minimizador.cu (alfa,
-beta). Los alfa, beta (y K) para energia() se leen de la linea que imprime el binario, asi que siempre son los
-mismos que uso el minimizador.
+beta, Vp, w). Los alfa, beta (y K) para energia() se leen de la linea que imprime el binario y el pinning del Al,
+Vp sum_i exp(-|r-R_i|^2/2w^2) en la red triangular de Nv sitios, de pinning.dat que escribe el binario, asi que
+siempre son los mismos que uso el minimizador.
 
 Uso:  python barrido_q.py          (con el binario ./minimizador en el directorio actual)
 Test: python barrido_q.py --test
@@ -62,8 +63,9 @@ def vecinos(f, dx, Bz, By, d, tx, ty):
     return xp, yp
 
 
-def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0):
-    """F[psi] de compute_energy del .cu y su aporte por capa. psi con forma (2, Ny, Nx), coef = {K, alfa, beta}.
+def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0, pin=0.0):
+    """F[psi] de compute_energy del .cu y su aporte por capa. psi con forma (2, Ny, Nx), coef = {K, alfa, beta},
+    pin: Vp sum_i exp(-|r-R_i|^2/2w^2) con forma (Ny, Nx), suma al coeficiente de |psi_1|^2.
     Devuelve (F total, [F capa 1, F capa 2])."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     K, a2, a4 = (cp.asarray(v, float)[:, None, None]
@@ -72,6 +74,7 @@ def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0):
     rho = abs2(psi)
     e = (K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2
          - J * (psi.conj() * psi[::-1]).real)
+    e[0] += pin * rho[0]
     capas = cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 2
     return float(capas.sum()), capas
 
@@ -111,12 +114,13 @@ def main():
     s = np.loadtxt(SEED)
     cero = minimizar(0.0, 0.0, (s[:, 0] + 1j * s[:, 1]).reshape(2, Ny, Nx))
     coef, psi0 = cero[1], cero[2]
+    pin = cp.asarray(np.loadtxt("pinning.dat", usecols=2).reshape(Ny, Nx))
 
     def G(qx, qy):
         """(G total del binario, [G_1, G_2] de energia()) con psi minimizada en (qx, qy)."""
         E, _, psi = cero if qx == qy == 0 else minimizar(qx, qy, psi0 * np.exp(1j * (qx * x + qy * y)))
-        Ep, capas = energia(cp.asarray(psi), dx, Bz, By, d, J, coef, qx * Lx, qy * Ly)
-        print(f"  G = {E:.14g}  (G_1 + G_2 de python: {Ep:.14g})")
+        Ep, capas = energia(cp.asarray(psi), dx, Bz, By, d, J, coef, qx * Lx, qy * Ly, pin)
+        print(f"  G ={E:.14g}  (G_1 + G_2 de python: {Ep:.14g})")
         if abs(Ep - E) > 1e-8 * abs(E):
             print("AVISO: energia() no coincide con el binario")
         return E, capas
@@ -163,18 +167,20 @@ def selftest():
     # onda plana sin Bz, psi_k = a_k exp(i q.r) con el twist q L, By d != 0. Por sitio, en la capa k:
     # K_k a_k^2 l_k + a2_k a_k^2 + a4_k a_k^4 / 2 - J a_1 a_2,  a2 = (-alfa_1, alfa_2), a4 = beta,
     # l_k = 2 [2 - cos((qx + k By d) dx) - cos(qy dx)] / dx^2  (la capa 2 ve qx corrido por -A_d,x = By d).
-    # Sin el twist de borde el enlace i = Nx-1 rompe la igualdad.
+    # Sin el twist de borde el enlace i = Nx-1 rompe la igualdad. El pinning (arbitrario) solo suma
+    # dx^2 a_1^2 sum_r pin(r) a la capa 1.
     Nx, Ny, dx, By, d, J = 8, 6, 0.7, 0.3, 1.1, 0.25
     c = dict(K=(1.3, 0.6), alfa=(1.0, 0.4), beta=(1.0, 2.0))
     amp = np.array([0.9, 0.4])
+    pin = np.random.default_rng(0).random((Ny, Nx))
     x, y = cp.arange(Nx) * dx, cp.arange(Ny)[:, None] * dx
     for qx, qy in [(0.37, 0.0), (0.0, 0.41), (0.2, -0.3)]:
         psi = cp.asarray(amp)[:, None, None] * cp.exp(1j * (qx * x + qy * y))
-        got, capas = energia(psi, dx, 0.0, By, d, J, c, qx * Nx * dx, qy * Ny * dx)
+        got, capas = energia(psi, dx, 0.0, By, d, J, c, qx * Nx * dx, qy * Ny * dx, cp.asarray(pin))
         esperado = [Nx * Ny * dx ** 2 * (
             c["K"][k] * amp[k] ** 2 * 2 * (2 - np.cos((qx + k * By * d) * dx) - np.cos(qy * dx)) / dx ** 2
             + (-1) ** (k + 1) * c["alfa"][k] * amp[k] ** 2 + 0.5 * c["beta"][k] * amp[k] ** 4
-            - J * amp[0] * amp[1]) for k in (0, 1)]
+            - J * amp[0] * amp[1]) + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
         assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (qx, qy, capas, esperado)
         assert abs(got - sum(esperado)) < 1e-10 * abs(sum(esperado)), (got, esperado)
 
