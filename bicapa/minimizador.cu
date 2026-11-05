@@ -1,11 +1,13 @@
 // Bicapa 2D: minimiza por gradiente conjugado (Polak-Ribiere + Wolfe) la energia libre
 //
-// F = int d^2r [ K1 |D psi_1|^2 - alfa_1 |psi_1|^2 + 1/2 |psi_1|^4
+// F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + Vp sum_i exp(-|r-R_i|^2/2w^2)) |psi_1|^2 + 1/2 |psi_1|^4
 //              + K2 |(D - A_d) psi_2|^2 + alfa_2 |psi_2|^2 + 1/2 beta_2 |psi_2|^4
 //              - J (psi_1^* psi_2 + c.c.) ]
 //
 // D = -i grad - A_perp, A_perp = (0, Bz x), A_d = (-By d, 0).
 // Bordes periodicos con twist: psi(r + L_i e_i) = psi(r) exp(i q_i L_i) exp(i Bz Lx y delta_ix).
+// Pinning en el Al: R_i, i = 1..Nv, leidos de pozos.dat (debilita el orden en los R_i, que atraen a los vortices).
+// barrido_q.py pone los R_i en los vortices de la solucion de q = 0 sin pinning.
 //
 // Misma estructura que actualizada/minimizador.cu, con el eje z reemplazado por el indice de capa
 // k = 0 (psi_1), k = 1 (psi_2): psi[i + Nx*(j + Ny*k)].
@@ -32,12 +34,16 @@ using cd = thrust::complex<double>;
 
 int Nx, Ny, Nv;
 double dx, Lx, Ly, Bz, By, qx, qy, d, J;
-double K[2], alfa[2], beta[2];
+double K[2], alfa[2], beta[2], Vp, w;
 dim3 Blocks, Threads;
 
 __constant__ int d_Nx, d_Ny;
 __constant__ double d_dx, d_Lx, d_Ly, d_Bz, d_By, d_qx, d_qy, d_d, d_J;
 __constant__ double d_K[2], d_a2[2], d_a4[2];   //potencial de la capa k: a2_k |psi|^2 + 1/2 a4_k |psi|^4
+__device__ const double* d_pin;                 //Vp sum_i exp(-|r-R_i|^2/2w^2) en (i + Nx j): se suma a a2 de la capa 1
+
+//a2 en el sitio (i, j) de la capa k, con el pinning en la capa 1
+__device__ inline double a2(int i, int j, int k){ return d_a2[k] + (k == 0 ? d_pin[i + d_Nx * j] : 0.0); }
 
 inline int hidx(int i,int j,int k){ return i + Nx*(j + Ny*k); }
 __device__ inline int didx(int i,int j,int k){ return i + d_Nx*(j + d_Ny*k); }
@@ -91,13 +97,13 @@ __device__ cd H(const cd* f, int i, int j, int k) {
 }
 
 
-// grad_k = dF/dpsi_k^* = K_k H psi_k + (a2_k + a4_k |psi_k|^2) psi_k - J psi_(otra capa), a2 = (-alfa_1, alfa_2), a4 = (1, beta_2)
+// grad_k = dF/dpsi_k^* = K_k H psi_k + (a2_k + a4_k |psi_k|^2) psi_k - J psi_(otra capa), a2 = (-alfa_1 + pin, alfa_2), a4 = (1, beta_2)
 __global__ void kernel_grad(const cd* psi, cd* grad){
     int i,j,k;
     if(!site(i,j,k)){
         cd psi0 = psi[didx(i,j,k)];
         grad[didx(i,j,k)] = d_K[k] * H(psi, i, j, k)
-                          + (d_a2[k] + d_a4[k] * thrust::norm(psi0)) * psi0
+                          + (a2(i, j, k) + d_a4[k] * thrust::norm(psi0)) * psi0
                           - d_J * psi[didx(i,j,1-k)];
     }
 }
@@ -123,7 +129,7 @@ struct energy_density_functor {
         double kin = thrust::norm(n.xp - psi0) + thrust::norm(n.yp - psi0);
 
         double psi_sq = thrust::norm(psi0);
-        double potential = d_a2[k] * psi_sq + 0.5 * d_a4[k] * psi_sq * psi_sq;
+        double potential = a2(i, j, k) * psi_sq + 0.5 * d_a4[k] * psi_sq * psi_sq;
 
         //-J (psi_1^* psi_2 + c.c.) = -2 J Re(psi_1^* psi_2): cada capa aporta la mitad
         double josephson = -d_J * (thrust::conj(psi0) * psi[didx(i,j,1-k)]).real();
@@ -256,12 +262,15 @@ int main(int argc, char* argv[]) {
     alfa[0] = 1.0;                  //alfa_1: entra como -alfa_1 |psi_1|^2
     alfa[1] = 1.0;                  //alfa_2: entra como +alfa_2 |psi_2|^2
     beta[0] = 1.0; beta[1] = 1.0;   //beta_1 = 1 fijo por el modelo, beta_2
+    Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
+    w = 1.0;                        //ancho de las gaussianas de pinning
 
     if (argc < 11) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny dx Nv By K1 K2 d J seed.dat [qx qy]" << std::endl
+                  << " Nx Ny dx Nv By K1 K2 d J seed.dat [qx qy [pozos.dat]]" << std::endl
                   << " seed.dat: 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)."
-                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes xy, por defecto 0." << std::endl;
+                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes xy, por defecto 0." << std::endl
+                  << " pozos.dat: Nv lineas 'X Y' con los centros R_i del pinning; sin el archivo no hay pinning." << std::endl;
         return 1;
     }
 
@@ -284,6 +293,40 @@ int main(int argc, char* argv[]) {
     int Ntot = 2 * Nx * Ny;
     double a[2] = {-alfa[0], alfa[1]};
 
+    //Centros R_i del pinning: exactamente Nv lineas 'X Y' en pozos.dat (argv[13]); sin el archivo, sin pinning
+    std::vector<double> RX, RY;
+    if (argc > 13) {
+        std::ifstream pozos_file(argv[13]);
+        double X, Y;
+        while (pozos_file >> X >> Y) { RX.push_back(X); RY.push_back(Y); }
+        if (!pozos_file.eof() || (int)RX.size() != Nv) {
+            std::cerr << "Pozos invalidos en " << argv[13] << ": se leyeron " << RX.size()
+                      << " centros, se esperaban Nv = " << Nv << " lineas 'X Y'.\n";
+            return 1;
+        }
+    }
+
+    std::vector<double> pin(Nx * Ny, 0.0);
+    for (size_t n = 0; n < RX.size(); n++)
+        for (int j = 0; j < Ny; j++)
+            for (int i = 0; i < Nx; i++) {
+                // ponytail: solo la imagen periodica mas cercana de cada R_i, vale si w << Lx/2, Ly/2
+                double rx = std::remainder(i * dx - RX[n], Lx), ry = std::remainder(j * dx - RY[n], Ly);
+                pin[i + Nx * j] += Vp * std::exp(-(rx * rx + ry * ry) / (2 * w * w));
+            }
+    thrust::device_vector<double> d_pin_vec = pin;
+    const double* pin_ptr = thrust::raw_pointer_cast(d_pin_vec.data());
+    cudaMemcpyToSymbol(d_pin, &pin_ptr, sizeof(pin_ptr));
+
+    //Mapa del pinning (barrido_q.py lo lee para energia()): x y Vp sum_i exp(-|r-R_i|^2/2w^2)
+    std::ofstream pin_file("pinning.dat");
+    pin_file << std::setprecision(17);
+    for (int j = 0; j < Ny; j++) {
+        for (int i = 0; i < Nx; i++) pin_file << i * dx << " " << j * dx << " " << pin[i + Nx * j] << "\n";
+        pin_file << "\n";
+    }
+    pin_file.close();
+
     //Parametro computacionales
     Threads = dim3(16, 16, 1);
     Blocks = dim3((Nx + 15) / 16, (Ny + 15) / 16, 2);
@@ -299,7 +342,8 @@ int main(int argc, char* argv[]) {
               << " q=(" << qx << "," << qy << ")"
               << " K=(" << K[0] << "," << K[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
-              << " beta=(" << beta[0] << "," << beta[1] << ")\n" << std::setprecision(6);
+              << " beta=(" << beta[0] << "," << beta[1] << ")"
+              << " Vp=" << Vp << " w=" << w << " pozos=" << (argc > 13 ? argv[13] : "ninguno") << "\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
