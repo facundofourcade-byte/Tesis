@@ -6,7 +6,8 @@
 //
 // D = -i grad - A_perp, A_perp = (0, Bz x), A_d = (-By d, 0).
 // Bordes periodicos con twist: psi(r + L_i e_i) = psi(r) exp(i q_i L_i) exp(i Bz Lx y delta_ix).
-// Pinning en el Al: R_i, i = 1..Nv, red triangular (debilita el orden en los R_i, que atraen a los vortices).
+// Pinning en el Al: R_i, i = 1..Nv, leidos de pozos.dat (debilita el orden en los R_i, que atraen a los vortices).
+// barrido_q.py pone los R_i en los vortices de la solucion de q = 0 sin pinning.
 //
 // Misma estructura que actualizada/minimizador.cu, con el eje z reemplazado por el indice de capa
 // k = 0 (psi_1), k = 1 (psi_2): psi[i + Nx*(j + Ny*k)].
@@ -33,7 +34,7 @@ using cd = thrust::complex<double>;
 
 int Nx, Ny, Nv;
 double dx, Lx, Ly, Bz, By, qx, qy, d, J;
-double K[2], alfa[2], beta[2], Vp, w, X0, Y0;
+double K[2], alfa[2], beta[2], Vp, w;
 dim3 Blocks, Threads;
 
 __constant__ int d_Nx, d_Ny;
@@ -263,16 +264,13 @@ int main(int argc, char* argv[]) {
     beta[0] = 1.0; beta[1] = 1.0;   //beta_1 = 1 fijo por el modelo, beta_2
     Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
     w = 1.0;                        //ancho de las gaussianas de pinning
-    //Origen de la red de pinning: la posicion de un vortice de la solucion con q = 0 y Vp = 0 (de density.dat).
-    //Con q = 0 el borde fija donde queda la red de vortices; si los pozos no caen ahi, el minimo de G(q) se va a
-    //q != 0 y el barrido sobre los ejes qx, qy no pasa por el.
-    X0 = 0.0; Y0 = 0.0;
 
     if (argc < 11) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny dx Nv By K1 K2 d J seed.dat [qx qy]" << std::endl
+                  << " Nx Ny dx Nv By K1 K2 d J seed.dat [qx qy [pozos.dat]]" << std::endl
                   << " seed.dat: 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)."
-                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes xy, por defecto 0." << std::endl;
+                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes xy, por defecto 0." << std::endl
+                  << " pozos.dat: Nv lineas 'X Y' con los centros R_i del pinning; sin el archivo no hay pinning." << std::endl;
         return 1;
     }
 
@@ -295,30 +293,27 @@ int main(int argc, char* argv[]) {
     int Ntot = 2 * Nx * Ny;
     double a[2] = {-alfa[0], alfa[1]};
 
-    //Red triangular de Nv sitios de pinning: px * py = Nv, filas alternadas corridas media celda, con py par
-    //para que cierre periodica en y. Se elige la factorizacion con ay/ax mas cerca de sqrt(3)/2: si la caja no
-    //tiene la proporcion justa la red queda algo deformada (ax = Lx/px, ay = Ly/py).
-    int px = 0, py = 0;
-    double err = 0.0;
-    for (int m = 1; m <= Nv; m++) {
-        if (Nv % m || (m % 2 && Nv % 2 == 0)) continue;   //py = m par, salvo Nv impar (no hay)
-        double e = std::abs((Ly / m) / (Lx / (Nv / m)) - std::sqrt(3.0) / 2);
-        if (!py || e < err) { px = Nv / m; py = m; err = e; }
+    //Centros R_i del pinning: exactamente Nv lineas 'X Y' en pozos.dat (argv[13]); sin el archivo, sin pinning
+    std::vector<double> RX, RY;
+    if (argc > 13) {
+        std::ifstream pozos_file(argv[13]);
+        double X, Y;
+        while (pozos_file >> X >> Y) { RX.push_back(X); RY.push_back(Y); }
+        if (!pozos_file.eof() || (int)RX.size() != Nv) {
+            std::cerr << "Pozos invalidos en " << argv[13] << ": se leyeron " << RX.size()
+                      << " centros, se esperaban Nv = " << Nv << " lineas 'X Y'.\n";
+            return 1;
+        }
     }
-    if (py % 2 && py > 1)
-        std::cerr << "AVISO: Nv impar, la red de pinning (" << px << "x" << py << ") no es triangular en el borde y.\n";
 
     std::vector<double> pin(Nx * Ny, 0.0);
-    for (int m = 0; m < py; m++)
-        for (int n = 0; n < px; n++) {
-            double X = X0 + (n + 0.5 * (m % 2)) * Lx / px, Y = Y0 + m * Ly / py;
-            for (int j = 0; j < Ny; j++)
-                for (int i = 0; i < Nx; i++) {
-                    // ponytail: solo la imagen periodica mas cercana de cada R_i, vale si w << Lx/2, Ly/2
-                    double rx = std::remainder(i * dx - X, Lx), ry = std::remainder(j * dx - Y, Ly);
-                    pin[i + Nx * j] += Vp * std::exp(-(rx * rx + ry * ry) / (2 * w * w));
-                }
-        }
+    for (size_t n = 0; n < RX.size(); n++)
+        for (int j = 0; j < Ny; j++)
+            for (int i = 0; i < Nx; i++) {
+                // ponytail: solo la imagen periodica mas cercana de cada R_i, vale si w << Lx/2, Ly/2
+                double rx = std::remainder(i * dx - RX[n], Lx), ry = std::remainder(j * dx - RY[n], Ly);
+                pin[i + Nx * j] += Vp * std::exp(-(rx * rx + ry * ry) / (2 * w * w));
+            }
     thrust::device_vector<double> d_pin_vec = pin;
     const double* pin_ptr = thrust::raw_pointer_cast(d_pin_vec.data());
     cudaMemcpyToSymbol(d_pin, &pin_ptr, sizeof(pin_ptr));
@@ -348,8 +343,7 @@ int main(int argc, char* argv[]) {
               << " K=(" << K[0] << "," << K[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " beta=(" << beta[0] << "," << beta[1] << ")"
-              << " Vp=" << Vp << " w=" << w << " red_pinning=" << px << "x" << py
-              << " origen_pinning=(" << X0 << "," << Y0 << ")\n" << std::setprecision(6);
+              << " Vp=" << Vp << " w=" << w << " pozos=" << (argc > 13 ? argv[13] : "ninguno") << "\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
