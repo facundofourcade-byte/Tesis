@@ -33,7 +33,7 @@ using cd = thrust::complex<double>;
 
 int Nx, Ny, Nv;
 double dx, Lx, Ly, Bz, By, qx, qy, d, J;
-double K[2], alfa[2], beta[2], Vp, w;
+double K[2], alfa[2], beta[2], Vp, w, X0, Y0;
 dim3 Blocks, Threads;
 
 __constant__ int d_Nx, d_Ny;
@@ -263,6 +263,10 @@ int main(int argc, char* argv[]) {
     beta[0] = 1.0; beta[1] = 1.0;   //beta_1 = 1 fijo por el modelo, beta_2
     Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
     w = 1.0;                        //ancho de las gaussianas de pinning
+    //Origen de la red de pinning: la posicion de un vortice de la solucion con q = 0 y Vp = 0 (de density.dat).
+    //Con q = 0 el borde fija donde queda la red de vortices; si los pozos no caen ahi, el minimo de G(q) se va a
+    //q != 0 y el barrido sobre los ejes qx, qy no pasa por el.
+    X0 = 0.0; Y0 = 0.0;
 
     if (argc < 11) {
         std::cerr << "Uso: " << argv[0]
@@ -307,7 +311,7 @@ int main(int argc, char* argv[]) {
     std::vector<double> pin(Nx * Ny, 0.0);
     for (int m = 0; m < py; m++)
         for (int n = 0; n < px; n++) {
-            double X = (n + 0.5 * (m % 2)) * Lx / px, Y = m * Ly / py;
+            double X = X0 + (n + 0.5 * (m % 2)) * Lx / px, Y = Y0 + m * Ly / py;
             for (int j = 0; j < Ny; j++)
                 for (int i = 0; i < Nx; i++) {
                     // ponytail: solo la imagen periodica mas cercana de cada R_i, vale si w << Lx/2, Ly/2
@@ -344,7 +348,8 @@ int main(int argc, char* argv[]) {
               << " K=(" << K[0] << "," << K[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " beta=(" << beta[0] << "," << beta[1] << ")"
-              << " Vp=" << Vp << " w=" << w << " red_pinning=" << px << "x" << py << "\n" << std::setprecision(6);
+              << " Vp=" << Vp << " w=" << w << " red_pinning=" << px << "x" << py
+              << " origen_pinning=(" << X0 << "," << Y0 << ")\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
