@@ -17,8 +17,9 @@ Stiffness: D_ii = (1/V) d^2 G / dq_i^2, V = Nx Ny dx^2, con la derivada segunda 
 ajustada a G(qx, 0) y a G(0, qy) alrededor de su minimo (NFIT puntos a cada lado): D_ii = 2 a / V. Con By d != 0
 la capa 2 prefiere qx = -By d, asi que el minimo de G puede no estar en q = 0: se imprime el q del minimo, -b / (2a).
 
-Salidas: pozos.dat (X Y de cada R_i), G_q.dat (q, G(q,0), G(0,q), G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_q.png (con las parabolas),
+Salidas: pozos.dat (X Y de cada R_i), density_q0.dat y phase_q0.dat (psi en q = 0 con pinning), G_q.dat (q, G(q,0), G(0,q), G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_q.png (con las parabolas),
 G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y qy).
+main() devuelve (Dxx, Dyy, qx del minimo, qy del minimo), para usarlo desde run_By.py.
 
 Los parametros se cambian aca (red, semilla, K1 K2 d J By, barrido en q) y en main() de minimizador.cu (alfa,
 beta, Vp, w). Los alfa, beta (y K) para energia() se leen de la linea que imprime el binario y el pinning del Al,
@@ -29,6 +30,7 @@ Uso:  python barrido_q.py          (con el binario ./minimizador en el directori
 Test: python barrido_q.py --test
 """
 import re
+import shutil
 import subprocess
 import sys
 
@@ -41,16 +43,16 @@ import matplotlib.pyplot as plt
 BINARIO = "./minimizador"
 
 # Parametros del binario: minimizador Nx Ny dx Nv By K1 K2 d J seed.dat qx qy [pozos.dat]
-Nx, Ny, Nv = 64, 64, 4
+Nx, Ny, Nv = 256, 256, 0
 dx, By = 0.5, 0.0
-K1, K2 = 1.0, 1.0
-d, J = 1.0, 0.1
+K1, K2 = 1.0, 400.0
+d, J = 0.032, 0.01112
 SEED = "seed.dat"           # 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)
 POZOS = "pozos.dat"         # lo escribe main(): vortices de psi_1 en q = 0 sin pinning
 
 # Barrido: q = QMAX * (-NQ..NQ) / NQ en qx (qy = 0) y en qy (qx = 0)
-QMAX, NQ = 0.05, 5
-NFIT = 3                    # stiffness: parabola con NFIT puntos a cada lado del minimo de G(q)
+QMAX, NQ = 0.05, 25
+NFIT = 4                    # stiffness: parabola con NFIT puntos a cada lado del minimo de G(q)
 
 COEF = ("K", "alfa", "beta")   # pares (capa 1, capa 2) que imprime el binario
 
@@ -146,6 +148,8 @@ def main():
     np.savetxt(POZOS, np.reshape(R, (-1, 2)), fmt="%.10f")
     print("Pozos en los vortices de q = 0 sin pinning:", " ".join(f"({X:.3f}, {Y:.3f})" for X, Y in R))
     cero = minimizar(0.0, 0.0, libre[2], POZOS)
+    shutil.copy("density.dat", "density_q0.dat")      # estado en q = 0 con pinning (los .dat se pisan con cada q)
+    shutil.copy("phase.dat", "phase_q0.dat")
     coef, psi0 = cero[1], cero[2]
     pin = cp.asarray(np.loadtxt("pinning.dat", usecols=2).reshape(Ny, Nx))
 
@@ -194,6 +198,8 @@ def main():
     ax[-1, 1].set_xlabel("$q_y$  ($q_x=0$)")
     fig.tight_layout()
     fig.savefig("G_capas_q.png", dpi=150)
+    plt.close("all")
+    return Dxx, Dyy, -px[1] / (2 * px[0]), -py[1] / (2 * py[0])
 
 
 def selftest():
