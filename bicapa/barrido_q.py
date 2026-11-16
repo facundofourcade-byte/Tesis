@@ -21,8 +21,9 @@ Salidas: pozos.dat (X Y de cada R_i), density_q0.dat y phase_q0.dat (psi en q = 
 G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y qy).
 main() devuelve (Dxx, Dyy, qx del minimo, qy del minimo), para usarlo desde run_By.py.
 
-Los parametros se cambian aca (red, semilla, K1 K2 d J By, barrido en q) y en main() de minimizador.cu (alfa,
-beta, Vp, w). Los alfa, beta (y K) para energia() se leen de la linea que imprime el binario y el pinning del Al,
+Los parametros se cambian aca (red, semilla, K1 K2 d J g By, barrido en q) y en main() de minimizador.cu (alfa_1,
+beta, Vp, w); alfa_2 = 1 + 3.8e-7 K2 g^2 By^2 lo calcula el binario. Los alfa, beta (y K) para energia() se leen
+de la linea que imprime el binario y el pinning del Al,
 Vp sum_i exp(-|r-R_i|^2/2w^2), de pinning.dat que escribe el binario, asi que siempre son los mismos que uso el
 minimizador.
 
@@ -42,11 +43,12 @@ import matplotlib.pyplot as plt
 
 BINARIO = "./minimizador"
 
-# Parametros del binario: minimizador Nx Ny dx Nv By K1 K2 d J seed.dat qx qy [pozos.dat]
+# Parametros del binario: minimizador Nx Ny dx Nv By K1 K2 d J g seed.dat qx qy [pozos.dat]
 Nx, Ny, Nv = 256, 256, 0
 dx, By = 0.5, 0.0
 K1, K2 = 1.0, 400.0
 d, J = 0.032, 0.01112
+g = 2.0                     # alfa_2 = 1 + 3.8e-7 K2 g^2 By^2 (lo calcula el binario)
 SEED = "seed.dat"           # 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)
 POZOS = "pozos.dat"         # lo escribe main(): vortices de psi_1 en q = 0 sin pinning
 
@@ -124,7 +126,7 @@ def minimizar(qx, qy, psi_seed, pozos=None):
     Devuelve (E_final, coeficientes {K, alfa, beta: (capa 1, capa 2)}, psi minimizada)."""
     s = psi_seed.ravel()
     np.savetxt("seed_q.dat", np.column_stack([s.real, s.imag]), fmt="%.16e")
-    args = [BINARIO, *map(str, (Nx, Ny, dx, Nv, By, K1, K2, d, J, "seed_q.dat", qx, qy, *[pozos] * bool(pozos)))]
+    args = [BINARIO, *map(str, (Nx, Ny, dx, Nv, By, K1, K2, d, J, g, "seed_q.dat", qx, qy, *[pozos] * bool(pozos)))]
     print(f"q = ({qx:+.6f}, {qy:+.6f}) ...", flush=True)
     out = subprocess.run(args, stdout=subprocess.PIPE, text=True, check=True).stdout
     print("  " + "".join(re.findall(r"Chequeo gradiente.*", out)))

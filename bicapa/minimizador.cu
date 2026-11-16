@@ -2,7 +2,7 @@
 //
 // F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + Vp sum_i exp(-|r-R_i|^2/2w^2)) |psi_1|^2 + 1/2 |psi_1|^4
 //              + K2 |(D - A_d) psi_2|^2 + alfa_2 |psi_2|^2 + 1/2 beta_2 |psi_2|^4
-//              - J (psi_1^* psi_2 + c.c.) ]
+//              - J (psi_1^* psi_2 + c.c.) ],   alfa_2 = 1 + 3.8e-7 K2 g^2 By^2
 //
 // D = -i grad - A_perp, A_perp = (0, Bz x), A_d = (-By d, 0).
 // Bordes periodicos con twist: psi(r + L_i e_i) = psi(r) exp(i q_i L_i) exp(i Bz Lx y delta_ix).
@@ -33,7 +33,7 @@
 using cd = thrust::complex<double>;
 
 int Nx, Ny, Nv;
-double dx, Lx, Ly, Bz, By, qx, qy, d, J;
+double dx, Lx, Ly, Bz, By, qx, qy, d, J, g;
 double K[2], alfa[2], beta[2], Vp, w;
 dim3 Blocks, Threads;
 
@@ -260,14 +260,13 @@ struct polak_ribiere_op {
 int main(int argc, char* argv[]) {
 
     alfa[0] = 1.0;                  //alfa_1: entra como -alfa_1 |psi_1|^2
-    alfa[1] = 1.0;                  //alfa_2: entra como +alfa_2 |psi_2|^2
     beta[0] = 1.0; beta[1] = 9091.0;   //beta_1 = 1 fijo por el modelo, beta_2
     Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
     w = 1.0;                        //ancho de las gaussianas de pinning
 
-    if (argc < 11) {
+    if (argc < 12) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny dx Nv By K1 K2 d J seed.dat [qx qy [pozos.dat]]" << std::endl
+                  << " Nx Ny dx Nv By K1 K2 d J g seed.dat [qx qy [pozos.dat]]" << std::endl
                   << " seed.dat: 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)."
                   << " q = (qx, qy): twist externo exp(i q.r) en los bordes xy, por defecto 0." << std::endl
                   << " pozos.dat: Nv lineas 'X Y' con los centros R_i del pinning; sin el archivo no hay pinning." << std::endl;
@@ -283,9 +282,11 @@ int main(int argc, char* argv[]) {
     K[1] = std::stod(argv[7]);
     d  = std::stod(argv[8]);
     J  = std::stod(argv[9]);
-    std::ifstream seed_file(argv[10]);
-    qx = (argc > 11) ? std::stod(argv[11]) : 0.0;
-    qy = (argc > 12) ? std::stod(argv[12]) : 0.0;
+    g  = std::stod(argv[10]);
+    std::ifstream seed_file(argv[11]);
+    qx = (argc > 12) ? std::stod(argv[12]) : 0.0;
+    qy = (argc > 13) ? std::stod(argv[13]) : 0.0;
+    alfa[1] = 1.0 + 3.8e-7 * K[1] * g * g * By * By;   //alfa_2: entra como +alfa_2 |psi_2|^2
 
     Lx = Nx * dx;
     Ly = Ny * dx;
@@ -293,14 +294,14 @@ int main(int argc, char* argv[]) {
     int Ntot = 2 * Nx * Ny;
     double a[2] = {-alfa[0], alfa[1]};
 
-    //Centros R_i del pinning: exactamente Nv lineas 'X Y' en pozos.dat (argv[13]); sin el archivo, sin pinning
+    //Centros R_i del pinning: exactamente Nv lineas 'X Y' en pozos.dat (argv[14]); sin el archivo, sin pinning
     std::vector<double> RX, RY;
-    if (argc > 13) {
-        std::ifstream pozos_file(argv[13]);
+    if (argc > 14) {
+        std::ifstream pozos_file(argv[14]);
         double X, Y;
         while (pozos_file >> X >> Y) { RX.push_back(X); RY.push_back(Y); }
         if (!pozos_file.eof() || (int)RX.size() != Nv) {
-            std::cerr << "Pozos invalidos en " << argv[13] << ": se leyeron " << RX.size()
+            std::cerr << "Pozos invalidos en " << argv[14] << ": se leyeron " << RX.size()
                       << " centros, se esperaban Nv = " << Nv << " lineas 'X Y'.\n";
             return 1;
         }
@@ -338,12 +339,12 @@ int main(int argc, char* argv[]) {
               << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
               << " By(en plano)=" << By
               << std::setprecision(10)
-              << " d=" << d << " J=" << J
+              << " d=" << d << " J=" << J << " g=" << g
               << " q=(" << qx << "," << qy << ")"
               << " K=(" << K[0] << "," << K[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " beta=(" << beta[0] << "," << beta[1] << ")"
-              << " Vp=" << Vp << " w=" << w << " pozos=" << (argc > 13 ? argv[13] : "ninguno") << "\n" << std::setprecision(6);
+              << " Vp=" << Vp << " w=" << w << " pozos=" << (argc > 14 ? argv[14] : "ninguno") << "\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
