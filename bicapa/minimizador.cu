@@ -261,7 +261,7 @@ int main(int argc, char* argv[]) {
 
     alfa[0] = 1.0;                  //alfa_1: entra como -alfa_1 |psi_1|^2
     alfa[1] = 1.0;                  //alfa_2: entra como +alfa_2 |psi_2|^2
-    beta[0] = 1.0; beta[1] = 1.0;   //beta_1 = 1 fijo por el modelo, beta_2
+    beta[0] = 1.0; beta[1] = 9091.0;   //beta_1 = 1 fijo por el modelo, beta_2
     Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
     w = 1.0;                        //ancho de las gaussianas de pinning
 
