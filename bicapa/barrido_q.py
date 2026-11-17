@@ -22,7 +22,8 @@ G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y 
 main() devuelve (Dxx, Dyy, qx del minimo, qy del minimo), para usarlo desde run_By.py.
 
 Los parametros se cambian aca (red, semilla, K1 K2 d J g By, barrido en q) y en main() de minimizador.cu (alfa_1,
-beta, Vp, w); alfa_2 = 1 + 3.8e-7 K2 g^2 By^2 lo calcula el binario. Los alfa, beta (y K) para energia() se leen
+beta, Vp, w); alfa_2 = 1 + 3.8e-7 K2 g^2 By^2 lo calcula el binario, y a -alfa_1 se le suma (5/70)^2 By^2/12
+(espesor del Al, ESPESOR aca). Los alfa, beta (y K) para energia() se leen
 de la linea que imprime el binario y el pinning del Al,
 Vp sum_i exp(-|r-R_i|^2/2w^2), de pinning.dat que escribe el binario, asi que siempre son los mismos que uso el
 minimizador.
@@ -56,6 +57,7 @@ POZOS = "pozos.dat"         # lo escribe main(): vortices de psi_1 en q = 0 sin 
 QMAX, NQ = 0.05, 25
 NFIT = 4                    # stiffness: parabola con NFIT puntos a cada lado del minimo de G(q)
 
+ESPESOR = (5 / 70) ** 2 / 12     # espesor finito del Al: suma ESPESOR By^2 a -alfa_1 (como en el .cu)
 COEF = ("K", "alfa", "beta")   # pares (capa 1, capa 2) que imprime el binario
 
 
@@ -78,7 +80,7 @@ def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0, pin=0.0):
     Devuelve (F total, [F capa 1, F capa 2])."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     K, a2, a4 = (cp.asarray(v, float)[:, None, None]
-                 for v in (coef["K"], (-coef["alfa"][0], coef["alfa"][1]), coef["beta"]))
+                 for v in (coef["K"], (-coef["alfa"][0] + ESPESOR * By ** 2, coef["alfa"][1]), coef["beta"]))
     xp, yp = vecinos(psi, dx, Bz, By, d, tx, ty)
     rho = abs2(psi)
     e = (K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2
@@ -206,7 +208,7 @@ def main():
 
 def selftest():
     # onda plana sin Bz, psi_k = a_k exp(i q.r) con el twist q L, By d != 0. Por sitio, en la capa k:
-    # K_k a_k^2 l_k + a2_k a_k^2 + a4_k a_k^4 / 2 - J a_1 a_2,  a2 = (-alfa_1, alfa_2), a4 = beta,
+    # K_k a_k^2 l_k + a2_k a_k^2 + a4_k a_k^4 / 2 - J a_1 a_2,  a2 = (-alfa_1 + ESPESOR By^2, alfa_2), a4 = beta,
     # l_k = 2 [2 - cos((qx + k By d) dx) - cos(qy dx)] / dx^2  (la capa 2 ve qx corrido por -A_d,x = By d).
     # Sin el twist de borde el enlace i = Nx-1 rompe la igualdad. El pinning (arbitrario) solo suma
     # dx^2 a_1^2 sum_r pin(r) a la capa 1.
@@ -220,7 +222,7 @@ def selftest():
         got, capas = energia(psi, dx, 0.0, By, d, J, c, qx * Nx * dx, qy * Ny * dx, cp.asarray(pin))
         esperado = [Nx * Ny * dx ** 2 * (
             c["K"][k] * amp[k] ** 2 * 2 * (2 - np.cos((qx + k * By * d) * dx) - np.cos(qy * dx)) / dx ** 2
-            + (-1) ** (k + 1) * c["alfa"][k] * amp[k] ** 2 + 0.5 * c["beta"][k] * amp[k] ** 4
+            + ((-1) ** (k + 1) * c["alfa"][k] + (k == 0) * ESPESOR * By ** 2) * amp[k] ** 2 + 0.5 * c["beta"][k] * amp[k] ** 4
             - J * amp[0] * amp[1]) + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
         assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (qx, qy, capas, esperado)
         assert abs(got - sum(esperado)) < 1e-10 * abs(sum(esperado)), (got, esperado)

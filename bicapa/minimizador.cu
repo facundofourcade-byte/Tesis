@@ -1,6 +1,6 @@
 // Bicapa 2D: minimiza por gradiente conjugado (Polak-Ribiere + Wolfe) la energia libre
 //
-// F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + Vp sum_i exp(-|r-R_i|^2/2w^2)) |psi_1|^2 + 1/2 |psi_1|^4
+// F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + (5/70)^2 By^2/12 + Vp sum_i exp(-|r-R_i|^2/2w^2)) |psi_1|^2 + 1/2 |psi_1|^4
 //              + K2 |(D - A_d) psi_2|^2 + alfa_2 |psi_2|^2 + 1/2 beta_2 |psi_2|^4
 //              - J (psi_1^* psi_2 + c.c.) ],   alfa_2 = 1 + 3.8e-7 K2 g^2 By^2
 //
@@ -292,7 +292,8 @@ int main(int argc, char* argv[]) {
     Ly = Ny * dx;
     Bz = 2.0 * M_PI * Nv / (Lx * Ly);
     int Ntot = 2 * Nx * Ny;
-    double a[2] = {-alfa[0], alfa[1]};
+    //Efecto de espesor finito del Al en el campo en plano: suma (5/70)^2 By^2 / 12 al coeficiente de |psi_1|^2
+    double a[2] = {-alfa[0] + (5.0/70.0)*(5.0/70.0)*By*By/12.0, alfa[1]};
 
     //Centros R_i del pinning: exactamente Nv lineas 'X Y' en pozos.dat (argv[14]); sin el archivo, sin pinning
     std::vector<double> RX, RY;
