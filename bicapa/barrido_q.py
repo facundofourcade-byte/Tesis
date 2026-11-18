@@ -10,15 +10,17 @@ Barre qx con qy = 0 y qy con qx = 0. Para q != 0 la semilla es psi(q=0) exp(i q.
 el twist: todos los q arrancan de la misma configuracion de vortices (y del mismo branch de G(q), que es periodica en
 qx con periodo 2 pi / Lx). Todo corre en el directorio actual: density.dat, phase.dat y run_log.dat quedan los de la
 ultima corrida, seed_q.dat es la semilla de la ultima.
-G(q) total es E_final del binario; G_k(q) de cada capa sale de energia() sobre la psi minimizada (el termino de
-Josephson -J (psi_1^* psi_2 + c.c.) va mitad a cada capa, asi G = G_1 + G_2).
+G(q) total es E_final del binario; G_k(q) de cada capa sale de energia() sobre la psi minimizada. G_1 es la energia
+de la capa del Al con la mitad del termino de Josephson -J (psi_1^* psi_2 + c.c.). G_2 es la energia propia de la capa
+de InAs con el termino de Josephson completo, por unidad de area y normalizada por <|psi_1|^2>(q) del Al:
+G_2 = [F_2 - J int (psi_1^* psi_2 + c.c.)] / (V <|psi_1|^2>). Ya no vale G = G_1 + G_2.
 
 Stiffness: D_ii = (1/V) d^2 G / dq_i^2, V = Nx Ny dx^2, con la derivada segunda de la parabola a q^2 + b q + c
 ajustada a G(qx, 0) y a G(0, qy) alrededor de su minimo (NFIT puntos a cada lado): D_ii = 2 a / V. Con By d != 0
 la capa 2 prefiere qx = -By d, asi que el minimo de G puede no estar en q = 0: se imprime el q del minimo, -b / (2a).
 
 Salidas: pozos.dat (X Y de cada R_i), density_q0.dat y phase_q0.dat (psi en q = 0 con pinning), G_q.dat (q, G(q,0), G(0,q), G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_q.png (con las parabolas),
-G_capas_q.png (G_1 y G_2, una fila por capa con su propia escala, columnas qx y qy).
+G_capas_q.png (G_1 y G_2 como en energia(), una fila por capa con su propia escala, columnas qx y qy).
 main() devuelve (Dxx, Dyy, qx del minimo, qy del minimo), para usarlo desde run_By.py.
 
 Los parametros se cambian aca (red, semilla, K1 K2 d J g By, barrido en q) y en main() de minimizador.cu (alfa_1,
@@ -77,17 +79,20 @@ def vecinos(f, dx, Bz, By, d, tx, ty):
 def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0, pin=0.0):
     """F[psi] de compute_energy del .cu y su aporte por capa. psi con forma (2, Ny, Nx), coef = {K, alfa, beta},
     pin: Vp sum_i exp(-|r-R_i|^2/2w^2) con forma (Ny, Nx), suma al coeficiente de |psi_1|^2.
-    Devuelve (F total, [F capa 1, F capa 2])."""
+    Devuelve (F total, [G_1, G_2]): G_1 = F capa 1 con la mitad de Josephson, G_2 = (F propia de la capa 2 + Josephson
+    completo) / (V <|psi_1|^2>), V = Nx Ny dx^2."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     K, a2, a4 = (cp.asarray(v, float)[:, None, None]
                  for v in (coef["K"], (-coef["alfa"][0] + ESPESOR * By ** 2, coef["alfa"][1]), coef["beta"]))
     xp, yp = vecinos(psi, dx, Bz, By, d, tx, ty)
     rho = abs2(psi)
-    e = (K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2
-         - J * (psi.conj() * psi[::-1]).real)
+    jh = -J * (psi[0].conj() * psi[1]).real          # mitad de -J (psi_1^* psi_2 + c.c.), igual en las dos capas
+    e = K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2 + jh
     e[0] += pin * rho[0]
     capas = cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 2
-    return float(capas.sum()), capas
+    total = float(capas.sum())
+    capas[1] = (capas[1] / dx ** 2 + float(jh.sum())) / float(rho[0].sum())   # V <|psi_1|^2> = dx^2 sum |psi_1|^2
+    return total, capas
 
 
 def vortices(psi, dx, Bz, By, d):
@@ -161,7 +166,7 @@ def main():
         """(G total del binario, [G_1, G_2] de energia()) con psi minimizada en (qx, qy)."""
         E, _, psi = cero if qx == qy == 0 else minimizar(qx, qy, psi0 * np.exp(1j * (qx * x + qy * y)), POZOS)
         Ep, capas = energia(cp.asarray(psi), dx, Bz, By, d, J, coef, qx * Lx, qy * Ly, pin)
-        print(f"  G = {E:.14g}  (G_1 + G_2 de python: {Ep:.14g})")
+        print(f"  G = {E:.14g}  (de python: {Ep:.14g})")
         if abs(Ep - E) > 1e-8 * abs(E):
             print("AVISO: energia() no coincide con el binario")
         return E, capas
@@ -220,12 +225,15 @@ def selftest():
     for qx, qy in [(0.37, 0.0), (0.0, 0.41), (0.2, -0.3)]:
         psi = cp.asarray(amp)[:, None, None] * cp.exp(1j * (qx * x + qy * y))
         got, capas = energia(psi, dx, 0.0, By, d, J, c, qx * Nx * dx, qy * Ny * dx, cp.asarray(pin))
-        esperado = [Nx * Ny * dx ** 2 * (
+        V = Nx * Ny * dx ** 2
+        esperado = [V * (
             c["K"][k] * amp[k] ** 2 * 2 * (2 - np.cos((qx + k * By * d) * dx) - np.cos(qy * dx)) / dx ** 2
             + ((-1) ** (k + 1) * c["alfa"][k] + (k == 0) * ESPESOR * By ** 2) * amp[k] ** 2 + 0.5 * c["beta"][k] * amp[k] ** 4
             - J * amp[0] * amp[1]) + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
-        assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (qx, qy, capas, esperado)
         assert abs(got - sum(esperado)) < 1e-10 * abs(sum(esperado)), (got, esperado)
+        # G_2: Josephson completo (otra mitad -J a_1 a_2 por sitio) y normalizada por V <|psi_1|^2> = V a_1^2
+        esperado[1] = (esperado[1] - V * J * amp[0] * amp[1]) / (V * amp[0] ** 2)
+        assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (qx, qy, capas, esperado)
 
     # vortices(): sin campo, vortice en r1 y antivortice en r2 (fuera de la red), |psi|^2 ~ r^2 cerca de cada uno
     Nx, Ny, dx = 24, 24, 0.5
