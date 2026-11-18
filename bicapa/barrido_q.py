@@ -10,10 +10,10 @@ Barre qx con qy = 0 y qy con qx = 0. Para q != 0 la semilla es psi(q=0) exp(i q.
 el twist: todos los q arrancan de la misma configuracion de vortices (y del mismo branch de G(q), que es periodica en
 qx con periodo 2 pi / Lx). Todo corre en el directorio actual: density.dat, phase.dat y run_log.dat quedan los de la
 ultima corrida, seed_q.dat es la semilla de la ultima.
-G(q) total es E_final del binario; G_k(q) de cada capa sale de energia() sobre la psi minimizada. G_1 es la energia
-de la capa del Al con la mitad del termino de Josephson -J (psi_1^* psi_2 + c.c.). G_2 es la energia propia de la capa
-de InAs con el termino de Josephson completo, por unidad de area y normalizada por <|psi_1|^2>(q) del Al:
-G_2 = [F_2 - J int (psi_1^* psi_2 + c.c.)] / (V <|psi_1|^2>). Ya no vale G = G_1 + G_2.
+G(q) total es E_final del binario; G_k(q) de cada capa sale de energia() sobre la psi minimizada. G_1 es solo la energia
+propia de la capa del Al. G_2 es la energia propia de la capa de InAs con el termino de Josephson
+-J (psi_1^* psi_2 + c.c.) completo, por unidad de area y normalizada por <|psi_1|^2>(q) del Al:
+G_2 = [F_2 - J int (psi_1^* psi_2 + c.c.)] / (V <|psi_1|^2>). G = G_1 + V <|psi_1|^2> G_2.
 
 Stiffness: D_ii = (1/V) d^2 G / dq_i^2, V = Nx Ny dx^2, con la derivada segunda de la parabola a q^2 + b q + c
 ajustada a G(qx, 0) y a G(0, qy) alrededor de su minimo (NFIT puntos a cada lado): D_ii = 2 a / V. Con By d != 0
@@ -79,19 +79,19 @@ def vecinos(f, dx, Bz, By, d, tx, ty):
 def energia(psi, dx, Bz, By, d, J, coef, tx=0.0, ty=0.0, pin=0.0):
     """F[psi] de compute_energy del .cu y su aporte por capa. psi con forma (2, Ny, Nx), coef = {K, alfa, beta},
     pin: Vp sum_i exp(-|r-R_i|^2/2w^2) con forma (Ny, Nx), suma al coeficiente de |psi_1|^2.
-    Devuelve (F total, [G_1, G_2]): G_1 = F capa 1 con la mitad de Josephson, G_2 = (F propia de la capa 2 + Josephson
+    Devuelve (F total, [G_1, G_2]): G_1 = F propia de la capa 1 (sin Josephson), G_2 = (F propia de la capa 2 + Josephson
     completo) / (V <|psi_1|^2>), V = Nx Ny dx^2."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     K, a2, a4 = (cp.asarray(v, float)[:, None, None]
                  for v in (coef["K"], (-coef["alfa"][0] + ESPESOR * By ** 2, coef["alfa"][1]), coef["beta"]))
     xp, yp = vecinos(psi, dx, Bz, By, d, tx, ty)
     rho = abs2(psi)
-    jh = -J * (psi[0].conj() * psi[1]).real          # mitad de -J (psi_1^* psi_2 + c.c.), igual en las dos capas
-    e = K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2 + jh
+    e = K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2
     e[0] += pin * rho[0]
+    e[1] -= 2 * J * (psi[0].conj() * psi[1]).real   # -J (psi_1^* psi_2 + c.c.) completo en la capa 2
     capas = cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 2
     total = float(capas.sum())
-    capas[1] = (capas[1] / dx ** 2 + float(jh.sum())) / float(rho[0].sum())   # V <|psi_1|^2> = dx^2 sum |psi_1|^2
+    capas[1] /= dx ** 2 * float(rho[0].sum())          # V <|psi_1|^2> = dx^2 sum |psi_1|^2
     return total, capas
 
 
@@ -213,7 +213,7 @@ def main():
 
 def selftest():
     # onda plana sin Bz, psi_k = a_k exp(i q.r) con el twist q L, By d != 0. Por sitio, en la capa k:
-    # K_k a_k^2 l_k + a2_k a_k^2 + a4_k a_k^4 / 2 - J a_1 a_2,  a2 = (-alfa_1 + ESPESOR By^2, alfa_2), a4 = beta,
+    # K_k a_k^2 l_k + a2_k a_k^2 + a4_k a_k^4 / 2 - 2 k J a_1 a_2 (Josephson entero en la capa 2, k = 0, 1),  a2 = (-alfa_1 + ESPESOR By^2, alfa_2), a4 = beta,
     # l_k = 2 [2 - cos((qx + k By d) dx) - cos(qy dx)] / dx^2  (la capa 2 ve qx corrido por -A_d,x = By d).
     # Sin el twist de borde el enlace i = Nx-1 rompe la igualdad. El pinning (arbitrario) solo suma
     # dx^2 a_1^2 sum_r pin(r) a la capa 1.
@@ -229,10 +229,9 @@ def selftest():
         esperado = [V * (
             c["K"][k] * amp[k] ** 2 * 2 * (2 - np.cos((qx + k * By * d) * dx) - np.cos(qy * dx)) / dx ** 2
             + ((-1) ** (k + 1) * c["alfa"][k] + (k == 0) * ESPESOR * By ** 2) * amp[k] ** 2 + 0.5 * c["beta"][k] * amp[k] ** 4
-            - J * amp[0] * amp[1]) + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
+            - 2 * k * J * amp[0] * amp[1]) + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
         assert abs(got - sum(esperado)) < 1e-10 * abs(sum(esperado)), (got, esperado)
-        # G_2: Josephson completo (otra mitad -J a_1 a_2 por sitio) y normalizada por V <|psi_1|^2> = V a_1^2
-        esperado[1] = (esperado[1] - V * J * amp[0] * amp[1]) / (V * amp[0] ** 2)
+        esperado[1] /= V * amp[0] ** 2       # G_2 normalizada por V <|psi_1|^2> = V a_1^2
         assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (qx, qy, capas, esperado)
 
     # vortices(): sin campo, vortice en r1 y antivortice en r2 (fuera de la red), |psi|^2 ~ r^2 cerca de cada uno
