@@ -1,24 +1,21 @@
 """Version Feyrer de bicapa/barrido_q.py: G(q) = min_psi F_q[psi] de la bicapa con un borde abierto, corriendo
 minimizador_feyrer.cu, que en cada llamada hace dos minimizaciones:
     x abierto (sufijo _abx): Dx psi = 0 en x = 0, Lx;   psi_k(x, y+Ly) = psi_k(x, y) exp(i qy Ly)
-    y abierto (sufijo _aby): Dy psi = 0 en y = 0, Ly;   psi_k(x+Lx, y) = psi_k(x, y) exp(i (Bz Lx y + qx Lx))
+    y abierto (sufijo _aby): Dy psi = 0 en y = 0, Ly;   psi_k(x+Lx, y) = psi_k(x, y) exp(i qx Lx)
+Bz = 0 siempre: no hay vortices ni pinning, y el unico potencial vector es A_d = (-By d, 0) en la capa 2.
 En la direccion abierta el twist no tiene efecto, asi que con x abierto solo se barre qy (G(0, qy), Dyy) y con y
 abierto solo qx (G(qx, 0), Dxx). Cada llamada al binario usa qx = qy = q y da un punto de cada curva.
 
-Pozos de pinning: primero minimiza en q = 0 desde SEED sin pinning (la misma semilla para los dos bordes); los
-vortices de psi_1 de cada solucion (sin contar las plaquetas que cruzan el borde abierto) son los centros R_i del
-pinning de esa minimizacion, en pozos_abx.dat y pozos_aby.dat. Con un borde abierto la cantidad de vortices puede
-no ser Nv (solo se avisa). Despues re-minimiza en q = 0 con los pozos (G(0)).
-
+G(0) es la minimizacion en q = 0 desde SEED (la misma semilla para los dos bordes).
 Para q != 0 la semilla es psi(q=0) exp(i q y) con x abierto y psi(q=0) exp(i q x) con y abierto, de cada borde.
 G total es E_final_ab{x,y} del binario; G_1, G_2 de cada capa salen de energia(), con la misma definicion que en
 barrido_q.py. Stiffness: D_ii = 2 a / V de la parabola ajustada alrededor del minimo (NFIT puntos a cada lado).
 
-Salidas: pozos_ab{x,y}.dat, density_q0_ab{x,y}.dat, phase_q0_ab{x,y}.dat (psi en q = 0 con pinning),
+Salidas: density_q0_ab{x,y}.dat, phase_q0_ab{x,y}.dat (psi en q = 0),
 G_q.dat (q, G(q,0) [y abierto], G(0,q) [x abierto], G_1(q,0), G_2(q,0), G_1(0,q), G_2(0,q)), G_q.png, G_capas_q.png.
 main() devuelve (Dxx, Dyy, qx del minimo, qy del minimo).
 
-Los parametros se cambian aca y en main() de minimizador_feyrer.cu (alfa_1, beta, Vp, w), como en barrido_q.py.
+Los parametros se cambian aca y en main() de minimizador_feyrer.cu (alfa_1, beta), como en barrido_q.py.
 
 Uso:  python barrido_q_feyrer.py          (con el binario ./minimizador_feyrer en el directorio actual)
 Test: python barrido_q_feyrer.py --test
@@ -37,14 +34,13 @@ import matplotlib.pyplot as plt
 BINARIO = "./minimizador_feyrer"
 AB = ("x", "y")             # borde abierto de cada minimizacion: ab = 0 -> x, ab = 1 -> y
 
-# Parametros del binario: minimizador_feyrer Nx Ny dx Nv By K1 K2 d J g seed_abx seed_aby qx qy [pozos_abx pozos_aby]
-Nx, Ny, Nv = 256, 256, 0
+# Parametros del binario: minimizador_feyrer Nx Ny dx By K1 K2 d J g seed_abx seed_aby qx qy
+Nx, Ny = 256, 256
 dx, By = 0.5, 0.0
 K1, K2 = 1.0, 400.0
 d, J = 0.032, 0.01112
 g = 2.0                     # alfa_2 = 1 + 3.8e-7 K2 g^2 By^2 (lo calcula el binario)
 SEED = "seed.dat"           # 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2), para los dos bordes
-POZOS = [f"pozos_ab{t}.dat" for t in AB]   # los escribe main(): vortices de psi_1 en q = 0 sin pinning
 
 # Barrido: q = QMAX * (-NQ..NQ) / NQ, qx con y abierto y qy con x abierto
 QMAX, NQ = 0.05, 25
@@ -54,19 +50,18 @@ ESPESOR = (5 / 70) ** 2 / 12     # espesor finito del Al: suma ESPESOR By^2 a -a
 COEF = ("K", "alfa", "beta")   # pares (capa 1, capa 2) que imprime el binario
 
 
-def vecinos(f, dx, Bz, By, d, tx, ty, ab):
+def vecinos(f, dx, By, d, tx, ty, ab):
     """xp, yp (enlaces adelantados) como en Vecinos del .cu, f con forma (2, Ny, Nx), tx = qx Lx, ty = qy Ly,
     ab = borde abierto (0 = x, 1 = y): ahi el vecino a traves del borde es el mismo sitio (enlace con D psi = 0)."""
     _, Ny, Nx = f.shape
-    x, y, k = cp.arange(Nx) * dx, cp.arange(Ny) * dx, cp.arange(2)[:, None, None]
-    Ux = cp.exp(1j * k * By * d * dx)               # exp(-i A_x dx), A_x = -By d solo en la capa 2
-    Uy = cp.exp(-1j * Bz * x * dx)
+    k = cp.arange(2)[:, None, None]
+    Ux = cp.exp(1j * k * By * d * dx)               # exp(-i A_x dx), A_x = -By d solo en la capa 2 (A_y = 0)
     xp = cp.roll(f, -1, 2) * Ux
     if ab == 0:
         xp[..., -1] = f[..., -1]
     else:
-        xp[..., -1] *= cp.exp(1j * (Bz * Nx * dx * y + tx))   # borde x: magnetico + twist
-    yp = cp.roll(f, -1, 1) * Uy
+        xp[..., -1] *= np.exp(1j * tx)
+    yp = cp.roll(f, -1, 1)
     if ab == 1:
         yp[:, -1] = f[:, -1]
     else:
@@ -74,45 +69,19 @@ def vecinos(f, dx, Bz, By, d, tx, ty, ab):
     return xp, yp
 
 
-def energia(psi, dx, Bz, By, d, J, coef, ab, tx=0.0, ty=0.0, pin=0.0):
+def energia(psi, dx, By, d, J, coef, ab, tx=0.0, ty=0.0):
     """F[psi] de compute_energy del .cu con el borde ab abierto, y su aporte por capa (ver barrido_q.py)."""
     abs2 = lambda a: a.real ** 2 + a.imag ** 2
     K, a2, a4 = (cp.asarray(v, float)[:, None, None]
                  for v in (coef["K"], (-coef["alfa"][0] + ESPESOR * By ** 2, coef["alfa"][1]), coef["beta"]))
-    xp, yp = vecinos(psi, dx, Bz, By, d, tx, ty, ab)
+    xp, yp = vecinos(psi, dx, By, d, tx, ty, ab)
     rho = abs2(psi)
     e = K * (abs2(xp - psi) + abs2(yp - psi)) / dx ** 2 + a2 * rho + 0.5 * a4 * rho ** 2
-    e[0] += pin * rho[0]
     e[1] -= 2 * J * (psi[0].conj() * psi[1]).real   # -J (psi_1^* psi_2 + c.c.) completo en la capa 2
     capas = cp.asnumpy(e.sum(axis=(1, 2))) * dx ** 2
     total = float(capas.sum())
     capas[1] /= dx ** 2 * float(rho[0].sum())          # V <|psi_1|^2> = dx^2 sum |psi_1|^2
     return total, capas
-
-
-def vortices(psi, dx, Bz, By, d, ab):
-    """Centros [(X, Y)] de los vortices de psi_1 como en barrido_q.py, sin las plaquetas que cruzan el borde
-    abierto ab (0 = x, 1 = y)."""
-    psi = cp.asarray(psi)
-    xp, yp = vecinos(psi, dx, Bz, By, d, 0.0, 0.0, ab)
-    p = psi[0]
-    fx, fy = cp.angle(p.conj() * xp[0]), cp.angle(p.conj() * yp[0])
-    n = cp.asnumpy(cp.rint((fx + cp.roll(fy, -1, 1) - cp.roll(fx, -1, 0) - fy + Bz * dx ** 2) / (2 * np.pi)))
-    if ab == 0:
-        n[:, -1] = 0
-    else:
-        n[-1] = 0
-    rho = cp.asnumpy(abs(p) ** 2)
-    Ny, Nx = rho.shape
-    # ponytail: el refinamiento parabolico usa vecinos periodicos tambien en la direccion abierta (solo afecta
-    # vortices pegados al borde abierto)
-    par = lambda m, c: np.clip((m[c - 1] - m[(c + 1) % len(m)])
-                               / (2 * (m[c - 1] - 2 * m[c] + m[(c + 1) % len(m)])), -1, 1)
-    R = []
-    for j, i in zip(*np.nonzero(n)):
-        j0, i0 = min((((j + b) % Ny, (i + a) % Nx) for a in (0, 1) for b in (0, 1)), key=lambda t: rho[t])
-        R.append(((i0 + par(rho[j0], i0)) * dx % (Nx * dx), (j0 + par(rho[:, i0], j0)) * dx % (Ny * dx)))
-    return R
 
 
 def stiffness(q, G, V, nfit):
@@ -126,14 +95,13 @@ def stiffness(q, G, V, nfit):
     return 2 * p[0] / V, p
 
 
-def minimizar(q, seeds, pozos=False):
+def minimizar(q, seeds):
     """Corre el binario con qx = qy = q desde seeds = (psi x abierto, psi y abierto), cada una (2, Ny, Nx), en el
-    directorio actual, con el pinning de POZOS si pozos. Devuelve ([(E_final, psi) por borde], coeficientes)."""
+    directorio actual. Devuelve ([(E_final, psi) por borde], coeficientes)."""
     for t, s in zip(AB, seeds):
         s = s.ravel()
         np.savetxt(f"seed_q_ab{t}.dat", np.column_stack([s.real, s.imag]), fmt="%.16e")
-    args = [BINARIO, *map(str, (Nx, Ny, dx, Nv, By, K1, K2, d, J, g, *[f"seed_q_ab{t}.dat" for t in AB], q, q,
-                                *POZOS * pozos))]
+    args = [BINARIO, *map(str, (Nx, Ny, dx, By, K1, K2, d, J, g, *[f"seed_q_ab{t}.dat" for t in AB], q, q))]
     print(f"q = {q:+.6f} ...", flush=True)
     out = subprocess.run(args, stdout=subprocess.PIPE, text=True, check=True).stdout
     print("  " + "\n  ".join(re.findall(r"Chequeo gradiente.*", out)))
@@ -150,30 +118,21 @@ def minimizar(q, seeds, pozos=False):
 
 def main():
     Lx, Ly = Nx * dx, Ny * dx
-    Bz = 2 * np.pi * Nv / (Lx * Ly)
     x, y = np.arange(Nx) * dx, np.arange(Ny)[:, None] * dx
     s = np.loadtxt(SEED)
     s = (s[:, 0] + 1j * s[:, 1]).reshape(2, Ny, Nx)
-    libre, _ = minimizar(0.0, (s, s))
-    for ab, t in enumerate(AB):
-        R = vortices(libre[ab][1], dx, Bz, By, d, ab)
-        if len(R) != Nv:
-            print(f"AVISO ({t} abierto): {len(R)} vortices en psi_1 con q = 0 sin pinning, Nv = {Nv}")
-        np.savetxt(POZOS[ab], np.reshape(R, (-1, 2)), fmt="%.10f")
-        print(f"Pozos ({t} abierto):", " ".join(f"({X:.3f}, {Y:.3f})" for X, Y in R))
-    cero, coef = minimizar(0.0, (libre[0][1], libre[1][1]), True)
+    cero, coef = minimizar(0.0, (s, s))
     for t in AB:
         shutil.copy(f"density_ab{t}.dat", f"density_q0_ab{t}.dat")   # los .dat se pisan con cada q
         shutil.copy(f"phase_ab{t}.dat", f"phase_q0_ab{t}.dat")
     psi0 = [c[1] for c in cero]
-    pin = [cp.asarray(np.loadtxt(f"pinning_ab{t}.dat", usecols=2).reshape(Ny, Nx)) for t in AB]
 
     def G(q):
         """[(G, [G_1, G_2]) con x abierto en (0, q), idem con y abierto en (q, 0)]."""
-        res = cero if q == 0 else minimizar(q, (psi0[0] * np.exp(1j * q * y), psi0[1] * np.exp(1j * q * x)), True)[0]
+        res = cero if q == 0 else minimizar(q, (psi0[0] * np.exp(1j * q * y), psi0[1] * np.exp(1j * q * x)))[0]
         out = []
         for ab, (E, psi) in enumerate(res):
-            Ep, capas = energia(cp.asarray(psi), dx, Bz, By, d, J, coef, ab, q * Lx, q * Ly, pin[ab])
+            Ep, capas = energia(cp.asarray(psi), dx, By, d, J, coef, ab, q * Lx, q * Ly)
             print(f"  G_ab{AB[ab]} = {E:.14g}  (de python: {Ep:.14g})")
             if abs(Ep - E) > 1e-8 * abs(E):
                 print("AVISO: energia() no coincide con el binario")
@@ -220,38 +179,25 @@ def main():
 
 
 def selftest():
-    # onda plana sin Bz, psi_k = a_k exp(i q.r), By d != 0, borde ab abierto: igual que en barrido_q.py, pero en la
+    # onda plana, psi_k = a_k exp(i q.r), By d != 0, borde ab abierto: igual que en barrido_q.py, pero en la
     # direccion abierta hay un enlace menos por fila (N - 1 en vez de N) y el twist de ese borde no entra.
     Nx, Ny, dx, By, d, J = 8, 6, 0.7, 0.3, 1.1, 0.25
     c = dict(K=(1.3, 0.6), alfa=(1.0, 0.4), beta=(1.0, 2.0))
     amp = np.array([0.9, 0.4])
-    pin = np.random.default_rng(0).random((Ny, Nx))
     x, y = cp.arange(Nx) * dx, cp.arange(Ny)[:, None] * dx
     for ab in (0, 1):
         for qx, qy in [(0.37, 0.0), (0.0, 0.41), (0.2, -0.3)]:
             psi = cp.asarray(amp)[:, None, None] * cp.exp(1j * (qx * x + qy * y))
-            got, capas = energia(psi, dx, 0.0, By, d, J, c, ab, qx * Nx * dx, qy * Ny * dx, cp.asarray(pin))
+            got, capas = energia(psi, dx, By, d, J, c, ab, qx * Nx * dx, qy * Ny * dx)
             V = Nx * Ny * dx ** 2
             lx, ly = Ny * (Nx - (ab == 0)) * dx ** 2, Nx * (Ny - (ab == 1)) * dx ** 2   # area de enlaces x, y
             esperado = [
                 c["K"][k] * amp[k] ** 2 * 2 * (lx * (1 - np.cos((qx + k * By * d) * dx)) + ly * (1 - np.cos(qy * dx))) / dx ** 2
                 + V * (((-1) ** (k + 1) * c["alfa"][k] + (k == 0) * ESPESOR * By ** 2) * amp[k] ** 2
-                       + 0.5 * c["beta"][k] * amp[k] ** 4 - 2 * k * J * amp[0] * amp[1])
-                + (k == 0) * dx ** 2 * amp[0] ** 2 * pin.sum() for k in (0, 1)]
+                       + 0.5 * c["beta"][k] * amp[k] ** 4 - 2 * k * J * amp[0] * amp[1]) for k in (0, 1)]
             assert abs(got - sum(esperado)) < 1e-10 * abs(sum(esperado)), (ab, got, esperado)
             esperado[1] /= V * amp[0] ** 2       # G_2 normalizada por V <|psi_1|^2> = V a_1^2
             assert np.allclose(capas, esperado, rtol=1e-10, atol=0), (ab, qx, qy, capas, esperado)
-
-    # vortices(): sin campo, vortice en r1 y antivortice en r2 (lejos de los bordes), con cada borde abierto
-    Nx, Ny, dx = 24, 24, 0.5
-    x, y = np.arange(Nx) * dx, np.arange(Ny)[:, None] * dx
-    r1, r2 = (3.3, 4.1), (8.6, 7.7)
-    a1, a2 = (np.hypot(x - c[0], y - c[1]) ** 2 for c in (r1, r2))
-    th = np.arctan2(y - r1[1], x - r1[0]) - np.arctan2(y - r2[1], x - r2[0])
-    psi = np.sqrt((1 - np.exp(-a1)) * (1 - np.exp(-a2))) * np.exp(1j * th) * np.ones((2, 1, 1))
-    for ab in (0, 1):
-        R = sorted(vortices(psi, dx, 0.0, 0.0, 0.0, ab))
-        assert len(R) == 2 and np.allclose(R, [r1, r2], atol=0.1), (ab, R)
 
     q, V = np.linspace(-0.5, 0.5, 41), 7.0
     D, p = stiffness(q, 3 + V / 2 * 1.7 * (q - 0.2) ** 2 + 100 * (abs(q - 0.2) > 0.08), V, 3)

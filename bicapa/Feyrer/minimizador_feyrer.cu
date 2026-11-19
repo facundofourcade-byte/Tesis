@@ -1,18 +1,16 @@
 // Bicapa 2D: minimiza por gradiente conjugado (Polak-Ribiere + Wolfe) la energia libre
 //
-// F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + (5/70)^2 By^2/12 + Vp sum_i exp(-|r-R_i|^2/2w^2)) |psi_1|^2 + 1/2 |psi_1|^4
+// F = int d^2r [ K1 |D psi_1|^2 + (-alfa_1 + (5/70)^2 By^2/12) |psi_1|^2 + 1/2 |psi_1|^4
 //              + K2 |(D - A_d) psi_2|^2 + alfa_2 |psi_2|^2 + 1/2 beta_2 |psi_2|^4
 //              - J (psi_1^* psi_2 + c.c.) ],   alfa_2 = 1 + 3.8e-7 K2 g^2 By^2
 //
-// D = -i grad - A_perp, A_perp = (0, Bz x), A_d = (-By d, 0).
+// Bz = 0 siempre: D = -i grad (sin vortices ni pinning) y el unico potencial vector es A_d = (-By d, 0) en la capa 2.
 // Version Feyrer de bicapa/minimizador.cu: corre dos minimizaciones, cada una con un borde abierto.
 //   ab = 0 ("x abierto"): Dx psi = 0 en x = 0 y x = Lx (se saca el enlace que cruza el borde en x);
 //                         en y el mismo borde periodico con twist de antes, psi(x, y+Ly) = psi(x, y) exp(i qy Ly).
 //   ab = 1 ("y abierto"): Dy psi = 0 en y = 0 y y = Ly; en x el de antes,
-//                         psi(x+Lx, y) = psi(x, y) exp(i (Bz Lx y + qx Lx)).
+//                         psi(x+Lx, y) = psi(x, y) exp(i qx Lx).
 // El twist en la direccion abierta no tiene efecto (qx no entra con x abierto, qy no entra con y abierto).
-// Pinning en el Al: R_i leidos de pozos_ab{x,y}.dat (debilita el orden en los R_i, que atraen a los vortices).
-// barrido_q_feyrer.py pone los R_i en los vortices de la solucion de q = 0 sin pinning de cada minimizacion.
 //
 // Misma estructura que actualizada/minimizador.cu, con el eje z reemplazado por el indice de capa
 // k = 0 (psi_1), k = 1 (psi_2): psi[i + Nx*(j + Ny*k)].
@@ -37,18 +35,14 @@
 
 using cd = thrust::complex<double>;
 
-int Nx, Ny, Nv;
-double dx, Lx, Ly, Bz, By, qx, qy, d, J, g;
-double K[2], alfa[2], beta[2], Vp, w;
+int Nx, Ny;
+double dx, Lx, Ly, By, qx, qy, d, J, g;
+double K[2], alfa[2], beta[2];
 dim3 Blocks, Threads;
 
 __constant__ int d_Nx, d_Ny, d_ab;   //d_ab: borde abierto, 0 = x, 1 = y
-__constant__ double d_dx, d_Lx, d_Ly, d_Bz, d_By, d_qx, d_qy, d_d, d_J;
+__constant__ double d_dx, d_Lx, d_Ly, d_By, d_qx, d_qy, d_d, d_J;
 __constant__ double d_K[2], d_a2[2], d_a4[2];   //potencial de la capa k: a2_k |psi|^2 + 1/2 a4_k |psi|^4
-__device__ const double* d_pin;                 //Vp sum_i exp(-|r-R_i|^2/2w^2) en (i + Nx j): se suma a a2 de la capa 1
-
-//a2 en el sitio (i, j) de la capa k, con el pinning en la capa 1
-__device__ inline double a2(int i, int j, int k){ return d_a2[k] + (k == 0 ? d_pin[i + d_Nx * j] : 0.0); }
 
 inline int hidx(int i,int j,int k){ return i + Nx*(j + Ny*k); }
 __device__ inline int didx(int i,int j,int k){ return i + d_Nx*(j + d_Ny*k); }
@@ -65,9 +59,6 @@ struct Vecinos {
     cd xp, xm, yp, ym;
 
     __device__ Vecinos(const cd* f, int i, int j, int k){
-        double x = i * d_dx;
-        double y = j * d_dx;
-
         //Link Ux = exp(-i A_x dx): A_x = 0 en la capa 1 y A_d,x = -By d en la capa 2
         int ip = (i + 1) % d_Nx;
         int im = (i - 1 + d_Nx) % d_Nx;
@@ -81,19 +72,15 @@ struct Vecinos {
             if (i == d_Nx - 1) xp = f[didx(i,j,k)];
             if (i == 0)        xm = f[didx(i,j,k)];
         }
-        // Twist de borde en x: psi(x+Lx, y) = psi(x, y) exp(i (Bz Lx y + qx Lx))
+        // Twist de borde en x: psi(x+Lx, y) = psi(x, y) exp(i qx Lx)
         else {
-            if (i == d_Nx - 1) xp *= thrust::exp(cd(0.0,  d_Bz * d_Lx * y + d_qx * d_Lx));
-            if (i == 0)        xm *= thrust::exp(cd(0.0, -d_Bz * d_Lx * y - d_qx * d_Lx));
+            if (i == d_Nx - 1) xp *= thrust::exp(cd(0.0,  d_qx * d_Lx));
+            if (i == 0)        xm *= thrust::exp(cd(0.0, -d_qx * d_Lx));
         }
 
-        //Link Uy = exp(-i A_y dx), A_y = Bz x
-        int jp = (j + 1) % d_Ny;
-        int jm = (j - 1 + d_Ny) % d_Ny;
-        cd Uy_pos = thrust::exp(cd(0.0, - d_Bz * x * d_dx));
-        cd Uy_neg = thrust::conj(Uy_pos);
-        yp = Uy_pos * f[didx(i,jp,k)];
-        ym = Uy_neg * f[didx(i,jm,k)];
+        //A_y = 0: sin link en y
+        yp = f[didx(i,(j + 1) % d_Ny,k)];
+        ym = f[didx(i,(j - 1 + d_Ny) % d_Ny,k)];
 
         // y abierto: Dy psi = 0 en el borde, igual que x abierto
         if (d_ab == 1) {
@@ -116,13 +103,13 @@ __device__ cd H(const cd* f, int i, int j, int k) {
 }
 
 
-// grad_k = dF/dpsi_k^* = K_k H psi_k + (a2_k + a4_k |psi_k|^2) psi_k - J psi_(otra capa), a2 = (-alfa_1 + pin, alfa_2), a4 = (1, beta_2)
+// grad_k = dF/dpsi_k^* = K_k H psi_k + (a2_k + a4_k |psi_k|^2) psi_k - J psi_(otra capa), a2 = (-alfa_1 + espesor, alfa_2), a4 = (1, beta_2)
 __global__ void kernel_grad(const cd* psi, cd* grad){
     int i,j,k;
     if(!site(i,j,k)){
         cd psi0 = psi[didx(i,j,k)];
         grad[didx(i,j,k)] = d_K[k] * H(psi, i, j, k)
-                          + (a2(i, j, k) + d_a4[k] * thrust::norm(psi0)) * psi0
+                          + (d_a2[k] + d_a4[k] * thrust::norm(psi0)) * psi0
                           - d_J * psi[didx(i,j,1-k)];
     }
 }
@@ -148,7 +135,7 @@ struct energy_density_functor {
         double kin = thrust::norm(n.xp - psi0) + thrust::norm(n.yp - psi0);
 
         double psi_sq = thrust::norm(psi0);
-        double potential = a2(i, j, k) * psi_sq + 0.5 * d_a4[k] * psi_sq * psi_sq;
+        double potential = d_a2[k] * psi_sq + 0.5 * d_a4[k] * psi_sq * psi_sq;
 
         //-J (psi_1^* psi_2 + c.c.) = -2 J Re(psi_1^* psi_2): cada capa aporta la mitad
         double josephson = -d_J * (thrust::conj(psi0) * psi[didx(i,j,1-k)]).real();
@@ -277,57 +264,19 @@ struct polak_ribiere_op {
 };
 
 
-//Una minimizacion con el borde abierto ab (0 = x, 1 = y), desde seed_name, con pinning en los R_i de pozos_name
-//(nullptr = sin pinning). Escribe pinning_ab{x,y}.dat, run_log_ab{x,y}.dat, density_ab{x,y}.dat, phase_ab{x,y}.dat
-//y E_final_ab{x,y}= en stdout. Devuelve 0 si salio bien.
-int minimizar(int ab, const char* seed_name, const char* pozos_name) {
+//Una minimizacion con el borde abierto ab (0 = x, 1 = y), desde seed_name. Escribe run_log_ab{x,y}.dat,
+//density_ab{x,y}.dat, phase_ab{x,y}.dat y E_final_ab{x,y}= en stdout. Devuelve 0 si salio bien.
+int minimizar(int ab, const char* seed_name) {
     const std::string t = std::string("_ab") + "xy"[ab];
     const int Ntot = 2 * Nx * Ny;
     cudaMemcpyToSymbol(d_ab, &ab, sizeof(int));
     alpha_prev = 0.5;
     std::cout << "=== Minimizacion con " << "xy"[ab] << " abierto (sufijo " << t << ") ===\n";
 
-    //Centros R_i del pinning: lineas 'X Y' en pozos (con un borde abierto puede haber != Nv vortices); sin archivo, sin pinning
-    std::vector<double> RX, RY;
-    if (pozos_name) {
-        std::ifstream pozos_file(pozos_name);
-        double X, Y;
-        while (pozos_file >> X >> Y) { RX.push_back(X); RY.push_back(Y); }
-        if (!pozos_file.eof()) {
-            std::cerr << "Pozos invalidos en " << pozos_name << ": se esperaban lineas 'X Y'.\n";
-            return 1;
-        }
-    }
-
-    std::vector<double> pin(Nx * Ny, 0.0);
-    for (size_t n = 0; n < RX.size(); n++)
-        for (int j = 0; j < Ny; j++)
-            for (int i = 0; i < Nx; i++) {
-                // ponytail: solo la imagen periodica mas cercana de cada R_i (y ninguna en la direccion abierta), vale si w << Lx/2, Ly/2
-                double rx = i * dx - RX[n], ry = j * dx - RY[n];
-                if (ab != 0) rx = std::remainder(rx, Lx);
-                if (ab != 1) ry = std::remainder(ry, Ly);
-                pin[i + Nx * j] += Vp * std::exp(-(rx * rx + ry * ry) / (2 * w * w));
-            }
-    thrust::device_vector<double> d_pin_vec = pin;
-    const double* pin_ptr = thrust::raw_pointer_cast(d_pin_vec.data());
-    cudaMemcpyToSymbol(d_pin, &pin_ptr, sizeof(pin_ptr));
-
-    //Mapa del pinning (barrido_q_feyrer.py lo lee para energia()): x y Vp sum_i exp(-|r-R_i|^2/2w^2)
-    std::ofstream pin_file("pinning" + t + ".dat");
-    pin_file << std::setprecision(17);
-    for (int j = 0; j < Ny; j++) {
-        for (int i = 0; i < Nx; i++) pin_file << i * dx << " " << j * dx << " " << pin[i + Nx * j] << "\n";
-        pin_file << "\n";
-    }
-    pin_file.close();
-
     //Parametro computacionales
     int max_iter = 80000;
     double tol = 1e-10 * Ntot;
     int restart_period = 100;
-
-    std::cout << "pozos=" << (pozos_name ? pozos_name : "ninguno") << " (" << RX.size() << " centros)\n";
 
     std::vector<cd> psi (Ntot);
     thrust::device_vector<cd> d_psi(Ntot);
@@ -479,52 +428,46 @@ int main(int argc, char* argv[]) {
 
     alfa[0] = 1.0;                  //alfa_1: entra como -alfa_1 |psi_1|^2
     beta[0] = 1.0; beta[1] = 9091.0;   //beta_1 = 1 fijo por el modelo, beta_2
-    Vp = 0.5;                       //pinning: Vp > 0 debilita el orden del Al en los R_i
-    w = 1.0;                        //ancho de las gaussianas de pinning
 
-    if (argc < 13 || argc == 16) {
+    if (argc < 12) {
         std::cerr << "Uso: " << argv[0]
-                  << " Nx Ny dx Nv By K1 K2 d J g seed_abx.dat seed_aby.dat [qx qy [pozos_abx.dat pozos_aby.dat]]" << std::endl
+                  << " Nx Ny dx By K1 K2 d J g seed_abx.dat seed_aby.dat [qx qy]" << std::endl
                   << " Corre dos minimizaciones: con x abierto (desde seed_abx.dat) y con y abierto (desde seed_aby.dat)." << std::endl
                   << " seed: 2*Nx*Ny lineas 'Re Im' (primero psi_1, despues psi_2)."
-                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes periodicos, por defecto 0." << std::endl
-                  << " pozos: lineas 'X Y' con los centros R_i del pinning de cada minimizacion; sin los archivos no hay pinning." << std::endl;
+                  << " q = (qx, qy): twist externo exp(i q.r) en los bordes periodicos, por defecto 0." << std::endl;
         return 1;
     }
 
     Nx = std::stoi(argv[1]);
     Ny = std::stoi(argv[2]);
     dx = std::stod(argv[3]);
-    Nv = std::stoi(argv[4]);
-    By = std::stod(argv[5]);
-    K[0] = std::stod(argv[6]);
-    K[1] = std::stod(argv[7]);
-    d  = std::stod(argv[8]);
-    J  = std::stod(argv[9]);
-    g  = std::stod(argv[10]);
-    qx = (argc > 13) ? std::stod(argv[13]) : 0.0;
-    qy = (argc > 14) ? std::stod(argv[14]) : 0.0;
+    By = std::stod(argv[4]);
+    K[0] = std::stod(argv[5]);
+    K[1] = std::stod(argv[6]);
+    d  = std::stod(argv[7]);
+    J  = std::stod(argv[8]);
+    g  = std::stod(argv[9]);
+    qx = (argc > 12) ? std::stod(argv[12]) : 0.0;
+    qy = (argc > 13) ? std::stod(argv[13]) : 0.0;
     alfa[1] = 1.0 + 3.8e-7 * K[1] * g * g * By * By;   //alfa_2: entra como +alfa_2 |psi_2|^2
 
     Lx = Nx * dx;
     Ly = Ny * dx;
-    Bz = 2.0 * M_PI * Nv / (Lx * Ly);
     //Efecto de espesor finito del Al en el campo en plano: suma (5/70)^2 By^2 / 12 al coeficiente de |psi_1|^2
     double a[2] = {-alfa[0] + (5.0/70.0)*(5.0/70.0)*By*By/12.0, alfa[1]};
 
     Threads = dim3(16, 16, 1);
     Blocks = dim3((Nx + 15) / 16, (Ny + 15) / 16, 2);
 
-    std::cout << "Nx=" << Nx << " Ny=" << Ny << " Nv=" << Nv
-              << " dx=" << dx << " Bz(fuera de plano, multiplo del numero de cuantos de flujo magnetico)=" << Bz
-              << " By(en plano)=" << By
+    std::cout << "Nx=" << Nx << " Ny=" << Ny
+              << " dx=" << dx << " By(en plano)=" << By
               << std::setprecision(10)
               << " d=" << d << " J=" << J << " g=" << g
               << " q=(" << qx << "," << qy << ")"
               << " K=(" << K[0] << "," << K[1] << ")"
               << " alfa=(" << alfa[0] << "," << alfa[1] << ")"
               << " beta=(" << beta[0] << "," << beta[1] << ")"
-              << " Vp=" << Vp << " w=" << w << "\n" << std::setprecision(6);
+              << "\n" << std::setprecision(6);
 
     cudaMemcpyToSymbol(d_Nx, &Nx, sizeof(int));
     cudaMemcpyToSymbol(d_Ny, &Ny, sizeof(int));
@@ -533,7 +476,6 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_Ly, &Ly, sizeof(double));
     cudaMemcpyToSymbol(d_qx, &qx, sizeof(double));
     cudaMemcpyToSymbol(d_qy, &qy, sizeof(double));
-    cudaMemcpyToSymbol(d_Bz, &Bz, sizeof(double));
     cudaMemcpyToSymbol(d_By, &By, sizeof(double));
     cudaMemcpyToSymbol(d_d, &d, sizeof(double));
     cudaMemcpyToSymbol(d_J, &J, sizeof(double));
@@ -542,7 +484,7 @@ int main(int argc, char* argv[]) {
     cudaMemcpyToSymbol(d_a4, beta, 2 * sizeof(double));
 
     for (int ab = 0; ab < 2; ab++)
-        if (minimizar(ab, argv[11 + ab], argc > 15 ? argv[15 + ab] : nullptr)) return 1;
+        if (minimizar(ab, argv[10 + ab])) return 1;
 
     return 0;
 }
